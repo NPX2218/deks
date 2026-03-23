@@ -1,10 +1,22 @@
 import Foundation
 import AppKit
 import ApplicationServices
+import CryptoKit
 
 @MainActor
 class WindowTracker {
     static let shared = WindowTracker()
+
+    private func stableWindowID(seed: String) -> UUID {
+        let digest = SHA256.hash(data: Data(seed.utf8))
+        let bytes = Array(digest.prefix(16))
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
     
     struct SessionWindow {
         let id: UUID
@@ -28,6 +40,7 @@ class WindowTracker {
     func synchronizeSession(workspaces: [Workspace]) {
         let runningApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         var activeElements = [AXUIElement]()
+        var titleOccurrences: [String: Int] = [:]
         
         for app in runningApps {
             let pid = app.processIdentifier
@@ -68,8 +81,28 @@ class WindowTracker {
                         }
                     }
                 }
-                
-                let id = matchedID ?? UUID()
+
+                let id: UUID
+                if let existing = matchedID {
+                    id = existing
+                } else {
+                    let titleKey = "\(bundleID)|\(title)"
+                    let occurrence = (titleOccurrences[titleKey] ?? 0) + 1
+                    titleOccurrences[titleKey] = occurrence
+
+                    var seed = "\(bundleID)|\(title)|\(occurrence)"
+                    var candidate = stableWindowID(seed: seed)
+                    var salt = 1
+
+                    while sessionWindows[candidate] != nil {
+                        seed = "\(bundleID)|\(title)|\(occurrence)|\(salt)"
+                        candidate = stableWindowID(seed: seed)
+                        salt += 1
+                    }
+
+                    id = candidate
+                }
+
                 sessionWindows[id] = SessionWindow(
                     id: id,
                     axElement: window,
@@ -90,7 +123,7 @@ class WindowTracker {
     
     func discoverWindows() -> [TrackedWindow] {
         return sessionWindows.values.map {
-            TrackedWindow(windowID: 0, ownerPID: $0.pid, bundleID: $0.bundleID, title: $0.currentTitle, appName: $0.appName, isOnScreen: true)
+            TrackedWindow(id: $0.id, windowID: 0, ownerPID: $0.pid, bundleID: $0.bundleID, title: $0.currentTitle, appName: $0.appName, isOnScreen: true)
         }
     }
     

@@ -30,6 +30,7 @@ enum WindowMatchRule: Codable {
 }
 
 struct TrackedWindow {
+    let id: UUID
     let windowID: CGWindowID
     let ownerPID: pid_t
     let bundleID: String

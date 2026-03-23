@@ -175,7 +175,7 @@ class WorkspaceManager {
     func assignWindow(_ tracked: TrackedWindow, to workspaceId: UUID) {
         guard let wsIndex = workspaces.firstIndex(where: { $0.id == workspaceId }) else { return }
         let reference = WindowRef(
-            id: UUID(), // Used strictly as a fallback, although config drag drops uses WindowRef safely
+            id: tracked.id,
             bundleID: tracked.bundleID,
             windowTitle: tracked.title,
             matchRule: .exactTitle(tracked.title)
