@@ -10,7 +10,7 @@
 
 <p align="center">
   Switch between complete working environments — apps, browser windows, tabs — instantly.<br>
-  No swipe animations. No clutter. No wasted RAM.
+  No animations. No clutter. No wasted RAM.
 </p>
 
 <p align="center">
@@ -31,107 +31,204 @@
 </p>
 
 <p align="center">
+  <a href="#install">Install</a> •
   <a href="#features">Features</a> •
-  <a href="#installation">Install</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#permissions">Permissions</a> •
+  <a href="#how-it-works">How it works</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#building-from-source">Build from source</a> •
   <a href="#roadmap">Roadmap</a>
 </p>
 
 ---
 
-<!-- If you have a screenshot or demo GIF, put it here: -->
-<!-- <p align="center">
-  <img src="assets/deks-demo.gif" width="720" alt="Deks demo">
-</p> -->
+<p align="center">
+  <img src="assets/deks-hero-preview.svg" width="720" alt="Deks workspace config panel">
+</p>
+
+---
 
 ## The problem
 
-Everyone juggles multiple contexts — school, freelance work, social media, side projects. macOS Spaces is too slow: you can't assign specific browser windows to specific spaces, switching has an animation you can't skip, and idle workspaces still eat your RAM.
+You juggle multiple contexts every day — school, freelance projects, social media, personal stuff. macOS Spaces is too clunky: you can't assign specific **browser windows** to specific spaces, switching has a slow swipe animation, and idle workspaces still eat your RAM.
 
-Existing tools like FlashSpace work at the **app level**, so "Brave" is either visible or hidden. You can't put one Brave window in your School workspace and another in Social.
+Existing tools work at the **app level** — so "Brave" is either visible or hidden. You can't split one browser into "school Brave" and "social Brave."
 
-Deks works at the **window level**. Three Brave windows can live in three different workspaces.
+**Deks fixes this.** It works at the **window level**.
 
-## Features
+## Install
 
-### Window-level workspace management
-Deks tracks individual windows, not just apps. It scrapes active macOS layers via CoreGraphics to preserve z-order stacking — switch away and switch back, and your windows restore in the exact same front-to-back arrangement.
+### Download (recommended)
 
-### Browser tab group awareness
-Deks reads Chromium-based browser (Chrome, Brave, Edge, Arc) window titles and tab groups through the Accessibility API. In the config panel you see "Brave — Canvas, Piazza" instead of just "Brave."
+Download the latest `.dmg` from [**Releases**](https://github.com/NPX2218/deks/releases/latest):
 
-### Instant hotkey switching
-Each workspace binds to a global hotkey (`⌥1`, `⌥2`, `⌥3`...). No animation, no delay. The switch is immediate.
+> **[⬇ Download Deks for macOS](https://github.com/NPX2218/deks/releases/latest/download/Deks.dmg)**
 
-### HUD overlay
-When you switch workspaces, a translucent frosted-glass HUD flashes in the center of your screen — like the macOS volume/brightness indicator — showing the workspace name and color. It fades after one second.
+Requires macOS 13.0 (Ventura) or later. Supports both Apple Silicon and Intel Macs.
 
-### Auto-assign new windows
-Deks continuously monitors for new windows via `AXUIElement` observers. When a new Terminal window or browser tab spawns, it's automatically assigned to your currently active workspace. No manual dragging required.
+### Homebrew
 
-### Idle optimization
-Workspaces inactive for 5 minutes get their exclusive processes frozen via POSIX `SIGSTOP`. This halts CPU execution without killing the app — saving battery and RAM. When you switch back, Deks sends `SIGCONT` and the apps resume instantly.
-
-### Quick switcher
-Press `⌥Tab` to open a Spotlight-style overlay. Type to filter workspaces, arrow keys to navigate, Enter to switch.
-
-### Launch on login
-Deks registers itself via `SMAppService` so it starts silently in the background every time your Mac boots. No Dock icon, no login item clutter.
-
-## Installation
+```bash
+brew install --cask deks
+```
 
 ### Build from source
 
+See [Building from source](#building-from-source) below.
+
+## Features
+
+### 🪟 Window-level workspace switching
+
+Not just apps — individual windows. Three Brave windows can live in three different workspaces.
+
+### 🔍 Browser tab group awareness
+
+Deks reads browser window titles and tab groups via the Accessibility API, so you see "Brave — Canvas, Piazza" not just "Brave."
+
+### ⚡ Instant hotkey switching
+
+Each workspace gets a configurable hotkey (default: `⌃1`, `⌃2`, `⌃3`...). Zero animation. Instant.
+
+### 🎨 Named & colored workspaces
+
+Custom name, custom color. The color shows in the menu bar, quick switcher, and the HUD overlay.
+
+<p align="center">
+  <img src="assets/deks-hud-demo.svg" width="300" alt="Deks HUD overlay showing workspace switch">
+</p>
+
+### 📊 Menu bar widget
+
+Always-visible colored dot + workspace name in the menu bar. Click for a dropdown of all workspaces.
+
+### 🔎 Quick switcher
+
+Press `⌥Tab` to open a Spotlight-style overlay. Type to filter, arrow keys to navigate, Enter to switch.
+
+### 💤 Idle optimization
+
+Background workspaces can be frozen using `SIGSTOP`/`SIGCONT`. Your Social apps don't eat RAM while you're coding. They resume instantly when you switch back.
+
+### 🖼 Workspace wallpapers
+
+Each workspace gets its own desktop wallpaper that swaps on switch.
+
+### 🔕 Focus mode integration
+
+Workspaces tie into macOS Focus modes. Switch to "School" and Discord notifications silence automatically.
+
+### 🚀 Launch on login
+
+Deks boots silently via `SMAppService` every time your Mac starts.
+
+### 📌 Floating windows
+
+Pin specific windows (Apple Music, Messages) to stay visible across all workspace switches.
+
+### 🖥 Native HUD overlay
+
+A gorgeous translucent overlay flashes on screen when you switch workspaces — like the macOS volume indicator.
+
+## How it works
+
+Deks uses the macOS Accessibility API (`AXUIElement`) to enumerate and control individual windows. When you switch workspaces, it hides all non-workspace windows and shows the ones that belong to your active workspace. No virtual desktops, no macOS Spaces — just smart window visibility management.
+
+```
+┌─────────────────────────────────────┐
+│          WorkspaceManager           │
+│  • switchTo(workspace)              │
+│  • assignWindow(window, workspace)  │
+├───────────┬─────────────────────────┤
+│ WindowTracker    │    IdleManager   │
+│ • AXUIElement    │  • SIGSTOP/CONT │
+│ • CGWindowList   │  • Per-workspace │
+└───────────┴─────────────────────────┘
+```
+
+## Configuration
+
+Deks stores its config in `~/Library/Application Support/Deks/`:
+
+| File | Contents |
+|------|----------|
+| `workspaces.json` | Workspace definitions, window assignments, colors |
+| `preferences.json` | Hotkeys, idle timeout, new window behavior |
+
+### New window behavior
+
+When a new window opens that isn't assigned to any workspace:
+
+| Mode | Behavior |
+|------|----------|
+| **Auto-assign** (default) | Joins the currently active workspace |
+| **Prompt** | Notification asks which workspace to assign |
+| **Floating** | Visible in all workspaces |
+
+### Hotkeys
+
+| Default | Action |
+|---------|--------|
+| `⌃1` – `⌃9` | Switch to workspace 1–9 |
+| `⌥Tab` | Open quick switcher |
+| `⌃⇧N` | Create new workspace |
+
+All hotkeys are configurable in Settings.
+
+## Building from source
+
 ```bash
+# Prerequisites
+# - Xcode 15.0+
+# - macOS 13.0+
+
+# Clone
 git clone https://github.com/NPX2218/deks.git
 cd deks
-swift run
+
+# Install dependencies
+brew bundle
+
+# Generate Xcode project
+xcodegen generate
+
+# Build
+xcodebuild -scheme Deks -configuration Release
+
+# Or open in Xcode
+open Deks.xcodeproj
 ```
-
-### Generate the .app bundle
-
-```bash
-chmod +x scripts/build-app.sh
-./scripts/build-app.sh
-```
-
-This compiles an optimized release binary, generates the `Info.plist`, converts the icon to `.icns`, and outputs a `Deks.app` bundle you can drag into `/Applications`.
 
 ## Permissions
 
-Deks uses the macOS **Accessibility API** to enumerate windows, read browser tab groups, and manage window visibility. On first launch, macOS will prompt you to grant Accessibility access to your Terminal (or IDE). Grant it and restart the app.
+Deks requires **Accessibility** permission to manage windows. On first launch, macOS will prompt you to grant this in System Settings → Privacy & Security → Accessibility.
 
-No other permissions are required. Deks doesn't access your files, camera, microphone, or network.
-
-## Usage
-
-1. **Menu bar** — Deks lives in your menu bar. Click the icon for a dropdown of all workspaces.
-2. **Settings** — Click "Settings..." to open the config panel. Deks shows all tracked windows; drag them into workspaces on the left.
-3. **Customize** — Rename workspaces, pick colors, toggle idle optimization, and set hotkeys per workspace.
-4. **Switch** — Hit `⌥1`–`⌥9` to jump between workspaces, or `⌥Tab` for the quick switcher.
+No other permissions are required. Deks does not access your files, camera, microphone, or network.
 
 ## Privacy
 
-All data stays on your machine in `~/Library/Application Support/Deks/`. No analytics, no telemetry, no network requests. Fully open source — read every line.
+Deks is private by design:
+
+- All data is stored locally in `~/Library/Application Support/Deks/`
+- No analytics, telemetry, or crash reporting
+- No network requests whatsoever
+- Fully open source — audit the code yourself
 
 ## Roadmap
 
-- [x] Window-level workspace management with z-order preservation
-- [x] Browser tab group awareness (Chromium)
-- [x] Global hotkey switching
+- [x] Window-level workspace management
+- [x] Browser tab group awareness
+- [x] Instant hotkey switching
 - [x] Menu bar widget
 - [x] Quick switcher overlay
-- [x] HUD overlay on switch
 - [x] Idle optimization (SIGSTOP/SIGCONT)
-- [x] Auto-assign new windows
+- [x] Workspace wallpapers
+- [x] Focus mode integration
 - [x] Launch on login
+- [x] Floating windows
+- [x] Native HUD overlay
 - [ ] Workspace snapshots & restore across restarts
-- [ ] Workspace-specific wallpapers
-- [ ] Focus mode integration
-- [ ] Floating windows (persist across all workspaces)
 - [ ] Smart rules engine (auto-assign by URL, app, display)
-- [ ] Launch sequences (boot all apps for a workspace in one click)
+- [ ] Launch sequences (one-click boot all apps for a workspace)
 - [ ] Built-in time tracking per workspace
 - [ ] Dock morphing per workspace
 - [ ] Multi-monitor independence
@@ -140,14 +237,20 @@ All data stays on your machine in `~/Library/Application Support/Deks/`. No anal
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — use it, fork it, build on it.
+
+## Acknowledgments
+
+Deks was inspired by the limitations of macOS Spaces, FlashSpace, and the dream of a workspace manager that actually understands browser windows.
 
 ---
 
 <p align="center">
-  <sub><b>deks</b> — your desk, your rules.</sub>
+  <img src="assets/deks-wordmark-onDark.svg" width="160" alt="deks">
+  <br>
+  <sub>your desk, your rules</sub>
 </p>

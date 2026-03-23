@@ -1,0 +1,83 @@
+name: Bug Report
+description: Report a bug in Deks
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the details below.
+
+  - type: input
+    id: version
+    attributes:
+      label: Deks version
+      description: Which version of Deks are you running?
+      placeholder: "e.g., 0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: macos-version
+    attributes:
+      label: macOS version
+      options:
+        - macOS 13 Ventura
+        - macOS 14 Sonoma
+        - macOS 15 Sequoia
+        - macOS 16 Tahoe
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Mac chip
+      options:
+        - Apple Silicon (M1/M2/M3/M4)
+        - Intel
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "When I switch to workspace 'School' using ⌃1, the Brave window doesn't hide..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this bug?
+      placeholder: |
+        1. Create two workspaces
+        2. Assign a Brave window to each
+        3. Switch between them with ⌃1 and ⌃2
+        4. Notice the window from workspace 1 stays visible
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Drag and drop any relevant screenshots or screen recordings here.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console logs
+      description: If applicable, paste relevant logs from Console.app (filter by "Deks").
+      render: shell

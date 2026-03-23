@@ -1,0 +1,9 @@
+<svg viewBox="24 8 210 48" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+  <g transform="translate(70, 12)">
+    <path d="M9 5.6h9c7.3 0 12.3 5.6 12.3 12.3S25.3 30 18 30H9V5.6z" fill="none" stroke="#e0e0e0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="12" y="10.6" width="7.2" height="3.6" rx="1.4" fill="#1D9E75"/>
+    <rect x="12" y="16" width="9.5" height="3.6" rx="1.4" fill="#7F77DD"/>
+    <rect x="12" y="21.3" width="6.2" height="3.6" rx="1.4" fill="#D85A30"/>
+  </g>
+  <text x="110" y="40" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif" font-size="30" font-weight="500" fill="#e0e0e0" letter-spacing="-0.5">deks</text>
+</svg>

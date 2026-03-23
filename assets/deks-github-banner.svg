@@ -1,0 +1,33 @@
+<svg viewBox="0 0 1280 640" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="640" fill="#111111"/>
+  <rect x="40" y="180" width="80" height="60" rx="12" fill="#1D9E75" opacity="0.12"/>
+  <rect x="60" y="320" width="60" height="45" rx="10" fill="#7F77DD" opacity="0.08"/>
+  <rect x="1160" y="140" width="70" height="50" rx="10" fill="#D85A30" opacity="0.10"/>
+  <rect x="1120" y="420" width="90" height="65" rx="12" fill="#1D9E75" opacity="0.06"/>
+  <rect x="180" y="480" width="50" height="38" rx="8" fill="#7F77DD" opacity="0.06"/>
+  <rect x="1040" y="280" width="55" height="42" rx="8" fill="#D85A30" opacity="0.05"/>
+  <g transform="translate(540, 140) scale(0.8)">
+    <path d="M64 40h64c52 0 88 40 88 88s-36 88-88 88H64V40z" fill="none" stroke="#e0e0e0" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="84" y="76" width="52" height="26" rx="10" fill="#1D9E75"/>
+    <rect x="84" y="114" width="68" height="26" rx="10" fill="#7F77DD"/>
+    <rect x="84" y="152" width="44" height="26" rx="10" fill="#D85A30"/>
+  </g>
+  <text x="640" y="420" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif" font-size="72" font-weight="500" fill="#e0e0e0" letter-spacing="-1">deks</text>
+  <text x="640" y="470" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif" font-size="20" fill="#666666">The workspace manager macOS deserves</text>
+  <g transform="translate(440, 510)">
+    <rect width="95" height="30" rx="15" fill="none" stroke="#1D9E75" stroke-width="1" opacity="0.6"/>
+    <text x="47.5" y="20" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif" font-size="11" fill="#1D9E75">Window-level</text>
+  </g>
+  <g transform="translate(555, 510)">
+    <rect width="85" height="30" rx="15" fill="none" stroke="#7F77DD" stroke-width="1" opacity="0.6"/>
+    <text x="42.5" y="20" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif" font-size="11" fill="#7F77DD">Tab-aware</text>
+  </g>
+  <g transform="translate(660, 510)">
+    <rect width="75" height="30" rx="15" fill="none" stroke="#D85A30" stroke-width="1" opacity="0.6"/>
+    <text x="37.5" y="20" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif" font-size="11" fill="#D85A30">Instant</text>
+  </g>
+  <g transform="translate(755, 510)">
+    <rect width="90" height="30" rx="15" fill="none" stroke="#BA7517" stroke-width="1" opacity="0.6"/>
+    <text x="45" y="20" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif" font-size="11" fill="#BA7517">RAM-smart</text>
+  </g>
+</svg>

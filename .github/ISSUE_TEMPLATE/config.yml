@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Discussions
+    url: https://github.com/NPX2218/deks/discussions
+    about: Ask questions, share workspace setups, or chat about Deks
+  - name: Workspace Templates
+    url: https://github.com/NPX2218/deks/discussions/categories/templates
+    about: Share your workspace templates with the community
