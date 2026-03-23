@@ -1,12 +1,12 @@
-import Foundation
 import AppKit
+import Foundation
 
 @MainActor
 class IdleManager {
     static let shared = IdleManager()
-    
+
     private var suspendedPIDs = Set<pid_t>()
-    
+
     func start() {
         Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -14,19 +14,21 @@ class IdleManager {
             }
         }
     }
-    
+
     func checkIdleWorkspaces() {
         let now = Date()
-        let timeout: TimeInterval = 5 * 60 // 5 mins
-        
+        let timeout: TimeInterval = 5 * 60  // 5 mins
+
         let allSessionWindows = WindowTracker.shared.sessionWindows.values
         let activeWsId = WorkspaceManager.shared.activeWorkspaceId
-        
+
         var activePIDs = Set<pid_t>()
         var targetToFreezePIDs = Set<pid_t>()
         var targetToResumePIDs = Set<pid_t>()
-        
-        if let activeId = activeWsId, let activeWs = WorkspaceManager.shared.workspaces.first(where: { $0.id == activeId }) {
+
+        if let activeId = activeWsId,
+            let activeWs = WorkspaceManager.shared.workspaces.first(where: { $0.id == activeId })
+        {
             for ref in activeWs.assignedWindows {
                 if let win = allSessionWindows.first(where: { $0.id == ref.id }) {
                     activePIDs.insert(win.pid)
@@ -34,12 +36,13 @@ class IdleManager {
                 }
             }
         }
-        
+
         for ws in WorkspaceManager.shared.workspaces {
             if ws.id == activeWsId { continue }
-            
-            let isExpired = ws.idleOptimization && (now.timeIntervalSince(ws.lastActiveAt) > timeout)
-            
+
+            let isExpired =
+                ws.idleOptimization && (now.timeIntervalSince(ws.lastActiveAt) > timeout)
+
             for ref in ws.assignedWindows {
                 if let win = allSessionWindows.first(where: { $0.id == ref.id }) {
                     if isExpired {
@@ -50,29 +53,39 @@ class IdleManager {
                 }
             }
         }
-        
+
         targetToFreezePIDs.subtract(activePIDs)
-        
+
         let safeResume = targetToResumePIDs.filter { !isSystemApp(pid: $0) }
-        let safeFreeze = targetToFreezePIDs.filter { !isSystemApp(pid: $0) }
-        
+        let safeFreeze = targetToFreezePIDs.filter {
+            guard !isSystemApp(pid: $0) else { return false }
+            guard let app = NSRunningApplication(processIdentifier: $0) else { return false }
+            return app.isHidden
+        }
+
         for pid in safeResume {
             if suspendedPIDs.contains(pid) {
-                kill(pid, SIGCONT)
-                suspendedPIDs.remove(pid)
-                print("Resumed inactive process \(pid) safely.")
+                if kill(pid, SIGCONT) == 0 {
+                    suspendedPIDs.remove(pid)
+                    print("Resumed inactive process \(pid) safely.")
+                } else {
+                    print("Warning: Failed to resume process \(pid).")
+                }
             }
         }
-        
+
         for pid in safeFreeze {
             if !suspendedPIDs.contains(pid) {
-                kill(pid, SIGSTOP)
-                suspendedPIDs.insert(pid)
-                print("Frozen inactive process \(pid) successfully to save RAM.")
+                if kill(pid, SIGSTOP) == 0 {
+                    suspendedPIDs.insert(pid)
+                    print("Frozen inactive process \(pid) successfully to save RAM.")
+                } else {
+                    print("Warning: Failed to freeze process \(pid).")
+                }
             }
         }
     }
-    
+
     private func isSystemApp(pid: pid_t) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid) else { return true }
         let bundle = app.bundleIdentifier?.lowercased() ?? ""
@@ -80,7 +93,7 @@ class IdleManager {
             "com.apple.finder",
             "com.apple.dock",
             "com.apple.systemuiserver",
-            "com.apple.loginwindow"
+            "com.apple.loginwindow",
         ]
         return blacklist.contains(bundle) || bundle.contains("deks")
     }
