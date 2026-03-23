@@ -3,11 +3,57 @@ import ApplicationServices
 import CryptoKit
 import Foundation
 
+extension Notification.Name {
+    static let windowOperationTelemetryChanged = Notification.Name(
+        "windowOperationTelemetryChanged")
+}
+
 @MainActor
 class WindowTracker {
     static let shared = WindowTracker()
 
-    private func matches(ref: WindowRef, bundleID: String, title: String, windowIndex: Int) -> Bool {
+    struct OperationTelemetry {
+        var hideFailures: Int = 0
+        var showFailures: Int = 0
+        var focusFailures: Int = 0
+        var lastFailureAt: Date?
+        var lastFailureDetail: String?
+
+        var totalFailures: Int {
+            hideFailures + showFailures + focusFailures
+        }
+    }
+
+    private(set) var operationTelemetry = OperationTelemetry()
+
+    private func recordFailure(operation: String, detail: String) {
+        switch operation {
+        case "hide":
+            operationTelemetry.hideFailures += 1
+        case "show":
+            operationTelemetry.showFailures += 1
+        case "focus":
+            operationTelemetry.focusFailures += 1
+        default:
+            break
+        }
+
+        operationTelemetry.lastFailureAt = Date()
+        operationTelemetry.lastFailureDetail = detail
+        NotificationCenter.default.post(name: .windowOperationTelemetryChanged, object: nil)
+    }
+
+    func telemetrySummary() -> String {
+        let t = operationTelemetry
+        if t.totalFailures == 0 {
+            return "Window ops: healthy"
+        }
+        return
+            "Window ops failures: \(t.totalFailures) (hide \(t.hideFailures), show \(t.showFailures), focus \(t.focusFailures))"
+    }
+
+    private func matches(ref: WindowRef, bundleID: String, title: String, windowIndex: Int) -> Bool
+    {
         guard ref.bundleID == bundleID else { return false }
 
         switch ref.matchRule {
@@ -108,7 +154,8 @@ class WindowTracker {
                 var matchedID: UUID?
                 for ws in workspaces {
                     if let ref = ws.assignedWindows.first(where: {
-                        matches(ref: $0, bundleID: bundleID, title: title, windowIndex: appWindowIndex)
+                        matches(
+                            ref: $0, bundleID: bundleID, title: title, windowIndex: appWindowIndex)
                     }) {
                         if sessionWindows[ref.id] == nil {
                             matchedID = ref.id
@@ -166,20 +213,30 @@ class WindowTracker {
 
     @discardableResult
     func hideSessionWindow(_ sessionWin: SessionWindow) -> Bool {
-        return setBoolAttribute(
+        let success = setBoolAttribute(
             sessionWin.axElement,
             attribute: kAXMinimizedAttribute as CFString,
             value: true
         )
+        if !success {
+            recordFailure(
+                operation: "hide", detail: "\(sessionWin.bundleID) / \(sessionWin.currentTitle)")
+        }
+        return success
     }
 
     @discardableResult
     func showSessionWindow(_ sessionWin: SessionWindow) -> Bool {
-        return setBoolAttribute(
+        let success = setBoolAttribute(
             sessionWin.axElement,
             attribute: kAXMinimizedAttribute as CFString,
             value: false
         )
+        if !success {
+            recordFailure(
+                operation: "show", detail: "\(sessionWin.bundleID) / \(sessionWin.currentTitle)")
+        }
+        return success
     }
 
     @discardableResult
@@ -196,7 +253,13 @@ class WindowTracker {
         )
         let raised =
             AXUIElementPerformAction(sessionWin.axElement, kAXRaiseAction as CFString) == .success
-        return mainSet && focusedSet && raised
+        let success = mainSet && focusedSet && raised
+        if !success {
+            let detail =
+                "\(sessionWin.bundleID) / \(sessionWin.currentTitle) [main=\(mainSet), focus=\(focusedSet), raise=\(raised)]"
+            recordFailure(operation: "focus", detail: detail)
+        }
+        return success
     }
 
     func getFrontmostSessionWindow() -> SessionWindow? {
