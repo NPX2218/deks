@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# SwiftPackageManager
+.build/
+Package.resolved
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# Output
+Deks.app/
+*.app/
+build.log
