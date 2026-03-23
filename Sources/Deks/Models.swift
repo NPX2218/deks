@@ -1,5 +1,5 @@
-import Foundation
 import AppKit
+import Foundation
 
 struct Workspace: Codable, Identifiable {
     let id: UUID
@@ -40,7 +40,7 @@ struct TrackedWindow {
 }
 
 struct HotkeyCombo: Codable, Equatable, Hashable {
-    var modifiers: UInt // We will store raw value of NSEvent.ModifierFlags
+    var modifiers: UInt  // We will store raw value of NSEvent.ModifierFlags
     var keyCode: UInt16
 }
 
@@ -53,4 +53,8 @@ enum NewWindowBehavior: String, Codable {
     case autoAssignToActive
     case prompt
     case floating
+}
+
+struct AppState: Codable {
+    var activeWorkspaceId: UUID?
 }

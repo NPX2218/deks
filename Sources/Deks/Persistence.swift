@@ -19,4 +19,8 @@ class Persistence {
     static func preferencesFileUrl() -> URL {
         return appSupportDir.appendingPathComponent("preferences.json")
     }
+
+    static func appStateFileUrl() -> URL {
+        return appSupportDir.appendingPathComponent("app-state.json")
+    }
 }
