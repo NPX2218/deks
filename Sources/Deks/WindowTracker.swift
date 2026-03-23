@@ -139,6 +139,14 @@ class WindowTracker {
                 _ = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
                 let title = titleRef as? String ?? ""
 
+                // Finder exposes a desktop pseudo-window with no title that cannot be restored like
+                // a standard user window. Ignore it to prevent noisy restore failures.
+                if bundleID == "com.apple.finder"
+                    && title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                {
+                    continue
+                }
+
                 // Filter out fake "ghost" accessibility elements (like Spotify's invisible background client workers)
                 // Real visible macOS windows always have measurable standard geometric screen dimensions
                 var sizeRef: CFTypeRef?

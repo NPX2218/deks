@@ -288,21 +288,24 @@ class WorkspaceManager {
         }
     }
 
-    // Automatically binds global Option+(1-9) hotkeys to jump between workspaces!
+    // Automatically binds global Control+(1-9) hotkeys to jump between workspaces.
     func registerAutomaticHotkeys() {
+        HotkeyManager.shared.resetAllHotkeys()
+
         // macOS Carbon key mapping for layout-independent hardware numbers 1 through 9
         let baseKeyCodes: [UInt16] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
-        let modifiers = NSEvent.ModifierFlags([.option]).rawValue
+        let workspaceModifiers = NSEvent.ModifierFlags([.control]).rawValue
+        let quickSwitcherModifiers = NSEvent.ModifierFlags([.option]).rawValue
 
         for (index, ws) in workspaces.enumerated() {
             if index < baseKeyCodes.count {
-                let combo = HotkeyCombo(modifiers: modifiers, keyCode: baseKeyCodes[index])
+                let combo = HotkeyCombo(modifiers: workspaceModifiers, keyCode: baseKeyCodes[index])
                 HotkeyManager.shared.register(hotkey: combo, for: ws.id)
             }
         }
 
         // Quick Switcher Map (Option + Tab)
-        let optionTab = HotkeyCombo(modifiers: modifiers, keyCode: 48)
+        let optionTab = HotkeyCombo(modifiers: quickSwitcherModifiers, keyCode: 48)
         HotkeyManager.shared.registerGlobalCallback(hotkey: optionTab) {
             QuickSwitcher.shared.show()
         }

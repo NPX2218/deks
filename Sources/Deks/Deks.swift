@@ -22,39 +22,78 @@ struct DeksApp {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var didSetupApp = false
     private var permissionPollTimer: Timer?
+    private var isPermissionAlertVisible = false
+    private var didRequestSystemPrompt = false
+    private var permissionPollAttempts = 0
+    private var hasShownDelayedPermissionHint = false
+
+    private let permissionPollInterval: TimeInterval = 1.0
+    private let delayedHintAttemptThreshold = 15
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Always show the app in the menu bar immediately so startup feels responsive.
+        MenuBarManager.shared.setup()
         requestPermissionsAndStart()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if !didSetupApp {
+            requestPermissionsAndStart()
+        }
+    }
+
     private func requestPermissionsAndStart() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-        let isTrusted = AXIsProcessTrustedWithOptions(options as CFDictionary)
+        let isTrusted: Bool
+        if didRequestSystemPrompt {
+            isTrusted = AXIsProcessTrusted()
+        } else {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+            isTrusted = AXIsProcessTrustedWithOptions(options as CFDictionary)
+            didRequestSystemPrompt = true
+        }
 
         if isTrusted {
             completeSetupIfNeeded()
         } else {
             beginPermissionPolling()
-            showAccessibilityAlert()
+            if !isPermissionAlertVisible {
+                showAccessibilityAlert()
+            }
         }
     }
 
     private func beginPermissionPolling() {
-        permissionPollTimer?.invalidate()
-        permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
+        if permissionPollTimer != nil { return }
+        permissionPollTimer = Timer.scheduledTimer(
+            withTimeInterval: permissionPollInterval, repeats: true
+        ) {
             [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if AXIsProcessTrusted() {
                     self.permissionPollTimer?.invalidate()
                     self.permissionPollTimer = nil
+                    self.permissionPollAttempts = 0
+                    self.hasShownDelayedPermissionHint = false
                     self.completeSetupIfNeeded()
+                } else {
+                    self.permissionPollAttempts += 1
+                    if self.permissionPollAttempts >= self.delayedHintAttemptThreshold,
+                        !self.hasShownDelayedPermissionHint,
+                        !self.isPermissionAlertVisible
+                    {
+                        self.hasShownDelayedPermissionHint = true
+                        self.showDelayedPermissionHint()
+                    }
                 }
             }
         }
     }
 
     private func showAccessibilityAlert() {
+        isPermissionAlertVisible = true
+        defer { isPermissionAlertVisible = false }
+
         NSApp.activate(ignoringOtherApps: true)
 
         let alert = NSAlert()
@@ -71,11 +110,58 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             openAccessibilitySettings()
             beginPermissionPolling()
         case .alertSecondButtonReturn:
-            if AXIsProcessTrusted() {
-                completeSetupIfNeeded()
-            } else {
-                showAccessibilityAlert()
-            }
+            handlePermissionRecheck()
+        default:
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func handlePermissionRecheck() {
+        if AXIsProcessTrusted() {
+            completeSetupIfNeeded()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Still Waiting for Permission"
+        alert.informativeText =
+            "Deks still cannot access Accessibility APIs yet.\n\nIf you just enabled it, macOS sometimes takes a few seconds to apply changes."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Keep Waiting")
+        alert.addButton(withTitle: "Quit")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            openAccessibilitySettings()
+            beginPermissionPolling()
+        case .alertSecondButtonReturn:
+            beginPermissionPolling()
+        default:
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func showDelayedPermissionHint() {
+        isPermissionAlertVisible = true
+        defer { isPermissionAlertVisible = false }
+
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Permission Not Applied Yet"
+        alert.informativeText =
+            "macOS is still reporting that Deks is blocked from Accessibility APIs.\n\nIf this keeps happening: remove Deks from Accessibility, add it again, then reopen Deks."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Re-check")
+        alert.addButton(withTitle: "Quit")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            openAccessibilitySettings()
+        case .alertSecondButtonReturn:
+            handlePermissionRecheck()
         default:
             NSApp.terminate(nil)
         }
@@ -94,6 +180,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func completeSetupIfNeeded() {
         guard !didSetupApp else { return }
         didSetupApp = true
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
+        permissionPollAttempts = 0
+        hasShownDelayedPermissionHint = false
         print("Accessibility permissions granted.")
         setupApp()
     }
@@ -107,7 +197,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("Loaded workspaces: \(WorkspaceManager.shared.workspaces.count)")
         }
 
-        MenuBarManager.shared.setup()
         IdleManager.shared.start()
         WorkspaceManager.shared.startAutoAssigner()
 

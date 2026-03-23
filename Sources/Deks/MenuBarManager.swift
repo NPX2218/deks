@@ -183,7 +183,7 @@ class MenuBarViewController: NSViewController {
 
         let workspaces = WorkspaceManager.shared.workspaces
         for (index, ws) in workspaces.enumerated() {
-            let shortcutHint = index < 9 ? "  [⌥\(index + 1)]" : ""
+            let shortcutHint = index < 9 ? "  [^\(index + 1)]" : ""
 
             // Beautifully unique app names for subtitle string mapping
             var appNames = [String]()
