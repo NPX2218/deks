@@ -12,8 +12,32 @@ class HUDManager {
         fadeTimer?.invalidate()
         window?.close()
 
-        let size: CGFloat = 200
-        let rect = NSRect(x: 0, y: 0, width: size, height: size)
+        let dotSize: CGFloat = 40
+        let stackSpacing: CGFloat = 20
+        let horizontalPadding: CGFloat = 28
+        let verticalPadding: CGFloat = 24
+        let minPanelWidth: CGFloat = 220
+        let minPanelHeight: CGFloat = 200
+
+        let screenWidth = NSScreen.main?.visibleFrame.width ?? 1200
+        let maxPanelWidth = min(420, screenWidth * 0.45)
+        let maxLabelWidth = max(160, maxPanelWidth - (horizontalPadding * 2))
+
+        let labelFont = NSFont.systemFont(ofSize: 22, weight: .bold)
+        let textRect = (workspace.name as NSString).boundingRect(
+            with: NSSize(width: maxLabelWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: labelFont]
+        )
+        let measuredLabelWidth = ceil(min(maxLabelWidth, max(120, textRect.width)))
+        let measuredLabelHeight = ceil(max(28, textRect.height))
+
+        let panelWidth = max(minPanelWidth, measuredLabelWidth + (horizontalPadding * 2))
+        let panelHeight = max(
+            minPanelHeight,
+            verticalPadding + dotSize + stackSpacing + measuredLabelHeight + verticalPadding
+        )
+        let rect = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
 
         let panel = NSPanel(
             contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
@@ -40,7 +64,6 @@ class HUDManager {
         stack.translatesAutoresizingMaskIntoConstraints = false
         visualEffect.addSubview(stack)
 
-        let dotSize: CGFloat = 40
         let dot = NSImageView()
         let image = NSImage(size: NSSize(width: dotSize, height: dotSize))
         image.lockFocus()
@@ -52,12 +75,16 @@ class HUDManager {
         dot.image = image
 
         let label = NSTextField(labelWithString: workspace.name)
-        label.font = .systemFont(ofSize: 22, weight: .bold)
+        label.font = labelFont
         label.textColor = .white
         label.alignment = .center
         label.isEditable = false
         label.isBordered = false
         label.drawsBackground = false
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        label.cell?.wraps = true
+        label.translatesAutoresizingMaskIntoConstraints = false
 
         stack.addArrangedSubview(dot)
         stack.addArrangedSubview(label)
@@ -65,6 +92,7 @@ class HUDManager {
         NSLayoutConstraint.activate([
             stack.centerXAnchor.constraint(equalTo: visualEffect.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: visualEffect.centerYAnchor),
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: maxLabelWidth),
         ])
 
         panel.contentView = visualEffect

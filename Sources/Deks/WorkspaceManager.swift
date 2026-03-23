@@ -7,6 +7,8 @@ class WorkspaceManager {
 
     var workspaces: [Workspace] = []
     var activeWorkspaceId: UUID?
+    private var startupRebalanceInProgress = false
+    private var startupRebalanceTask: Task<Void, Never>?
 
     private init() {
         loadWorkspaces()
@@ -155,21 +157,15 @@ class WorkspaceManager {
         }
     }
 
-    func switchTo(workspaceId: UUID) {
-        reconcileUnassignedWindows()
-        captureDynamicZOrder(for: activeWorkspaceId)
-
-        guard let wsIndex = workspaces.firstIndex(where: { $0.id == workspaceId }) else { return }
-        let workspace = workspaces[wsIndex]
-
-        // Pass 1: Instantly hide all windows entirely unrelated to this new Workspace
+    private func applyWorkspaceVisibility(workspace: Workspace, focusTopWindow: Bool) {
+        // Hide everything not in the target workspace.
         for sessionWin in WindowTracker.shared.sessionWindows.values {
             if !workspace.assignedWindows.contains(where: { $0.id == sessionWin.id }) {
                 WindowTracker.shared.hideSessionWindow(sessionWin)
             }
         }
 
-        // Pass 1.5: Batch unhide parent applications universally exactly once to completely eradicate sequential stutter hooks
+        // Unhide parent apps once to reduce per-window restore jitter.
         var pidsToUnhide = Set<pid_t>()
         for ref in workspace.assignedWindows {
             if let win = WindowTracker.shared.sessionWindows[ref.id] {
@@ -180,20 +176,62 @@ class WorkspaceManager {
             NSRunningApplication(processIdentifier: pid)?.unhide()
         }
 
-        // Pass 2: Iteratively un-minimize and restore assigned windows specifically from BACK to FRONT relying on our mathematical Z-order array!
-        for ref in workspace.assignedWindows.reversed() {
+        // Restore windows in back-to-front order.
+        for (index, ref) in workspace.assignedWindows.reversed().enumerated() {
             if let sessionWin = WindowTracker.shared.sessionWindows[ref.id] {
-                let shown = WindowTracker.shared.showSessionWindow(sessionWin)
-                let focused = WindowTracker.shared.focusAndRaiseSessionWindow(sessionWin)
-                if !shown || !focused {
-                    print(
-                        "Warning: Failed to fully restore window \(sessionWin.bundleID) / \(sessionWin.currentTitle)"
-                    )
+                _ = WindowTracker.shared.showSessionWindow(sessionWin)
+                if focusTopWindow && index == 0 {
+                    _ = WindowTracker.shared.focusAndRaiseSessionWindow(sessionWin)
                 }
-
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.002))
             }
         }
+    }
+
+    func startStartupRebalance() {
+        guard let activeId = activeWorkspaceId else { return }
+        startupRebalanceTask?.cancel()
+        startupRebalanceInProgress = true
+
+        startupRebalanceTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            // Run a few passes to catch windows restored by apps slightly after login.
+            for pass in 0..<6 {
+                if Task.isCancelled { return }
+
+                WindowTracker.shared.synchronizeSession(workspaces: self.workspaces)
+                if let wsIndex = self.workspaces.firstIndex(where: { $0.id == activeId }) {
+                    self.applyWorkspaceVisibility(
+                        workspace: self.workspaces[wsIndex],
+                        focusTopWindow: pass == 0
+                    )
+                }
+
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+
+            self.startupRebalanceInProgress = false
+            self.startupRebalanceTask = nil
+            self.menuBarRefreshIfNeeded()
+        }
+    }
+
+    private func menuBarRefreshIfNeeded() {
+        MenuBarManager.shared.updateTitle()
+        if ConfigPanelController.shared.window?.isVisible == true {
+            ConfigPanelController.shared.reload()
+        }
+    }
+
+    func switchTo(workspaceId: UUID) {
+        reconcileUnassignedWindows()
+        captureDynamicZOrder(for: activeWorkspaceId)
+
+        guard let wsIndex = workspaces.firstIndex(where: { $0.id == workspaceId }) else { return }
+        let workspace = workspaces[wsIndex]
+
+        applyWorkspaceVisibility(workspace: workspace, focusTopWindow: true)
 
         activeWorkspaceId = workspaceId
         workspaces[wsIndex].lastActiveAt = Date()
@@ -212,6 +250,21 @@ class WorkspaceManager {
         )
         workspaces[wsIndex].assignedWindows.append(reference)
         saveWorkspaces()
+    }
+
+    func renameWorkspace(id: UUID, to newName: String) {
+        guard let wsIndex = workspaces.firstIndex(where: { $0.id == id }) else { return }
+
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmed.isEmpty ? "Untitled Workspace" : trimmed
+        guard workspaces[wsIndex].name != finalName else { return }
+
+        workspaces[wsIndex].name = finalName
+        saveWorkspaces()
+
+        if activeWorkspaceId == id {
+            MenuBarManager.shared.updateTitle()
+        }
     }
 
     private func loadWorkspaces() {
@@ -244,6 +297,8 @@ class WorkspaceManager {
     }
 
     private func autoAssignNewWindows() {
+        if startupRebalanceInProgress { return }
+
         guard let activeId = activeWorkspaceId,
             workspaces.first(where: { $0.id == activeId }) != nil
         else { return }
@@ -281,10 +336,7 @@ class WorkspaceManager {
 
         if modified {
             saveWorkspaces()
-            MenuBarManager.shared.updateTitle()
-            if ConfigPanelController.shared.window?.isVisible == true {
-                ConfigPanelController.shared.reload()
-            }
+            menuBarRefreshIfNeeded()
         }
     }
 

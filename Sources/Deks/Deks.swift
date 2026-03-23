@@ -159,13 +159,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         IdleManager.shared.start()
         WorkspaceManager.shared.startAutoAssigner()
 
-        // Reconcile anything missing right at startup onto active Workspace
-        WorkspaceManager.shared.reconcileUnassignedWindows()
+        // Move heavy window discovery to background to let UI appear immediately
+        Task {
+            // Discover first, then rebalance visibility without reassigning everything to active.
+            WindowTracker.shared.synchronizeSession(workspaces: WorkspaceManager.shared.workspaces)
+            WorkspaceManager.shared.startStartupRebalance()
 
-        let windows = WindowTracker.shared.discoverWindows()
-        print("Discovered \(windows.count) visible windows on screen.")
-        for win in windows {
-            print("  - \(win.appName): \(win.title)")
+            let windows = WindowTracker.shared.discoverWindows()
+            print("Discovered \(windows.count) visible windows on screen.")
+            for win in windows {
+                print("  - \(win.appName): \(win.title)")
+            }
         }
     }
 }

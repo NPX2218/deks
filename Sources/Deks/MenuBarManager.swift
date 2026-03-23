@@ -8,6 +8,9 @@ class MenuBarManager: NSObject {
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
+    private var escapeKeyMonitor: Any?
+    private var globalEscapeKeyMonitor: Any?
+    private var globalMouseDownMonitor: Any?
 
     func setup() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -21,6 +24,55 @@ class MenuBarManager: NSObject {
         // Wide view like the spec
         popover.contentViewController = MenuBarViewController()
 
+        if escapeKeyMonitor == nil {
+            escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+                [weak self] event in
+                guard let self, self.popover.isShown else { return event }
+                if event.keyCode == 53 {  // Escape key
+                    self.closePopover()
+                    return nil
+                }
+                return event
+            }
+        }
+
+        if globalEscapeKeyMonitor == nil {
+            globalEscapeKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) {
+                [weak self] event in
+                guard let self, self.popover.isShown else { return }
+                if event.keyCode == 53 {  // Escape key
+                    Task { @MainActor in
+                        self.closePopover()
+                    }
+                }
+            }
+        }
+
+        // Fallback: close popover when user clicks outside Deks and focus callbacks are delayed.
+        if globalMouseDownMonitor == nil {
+            globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]
+            ) { [weak self] _ in
+                guard let self, self.popover.isShown else { return }
+                Task { @MainActor in
+                    self.closePopover()
+                }
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidResignActive),
+            name: NSApplication.didResignActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppWillTerminate),
+            name: NSApplication.willTerminateNotification,
+            object: nil
+        )
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleTelemetryChanged),
@@ -29,6 +81,22 @@ class MenuBarManager: NSObject {
         )
 
         updateTitle()
+    }
+
+    func teardown() {
+        if let monitor = escapeKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            escapeKeyMonitor = nil
+        }
+        if let monitor = globalEscapeKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalEscapeKeyMonitor = nil
+        }
+        if let monitor = globalMouseDownMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalMouseDownMonitor = nil
+        }
+        NotificationCenter.default.removeObserver(self)
     }
 
     func updateTitle() {
@@ -64,10 +132,15 @@ class MenuBarManager: NSObject {
             popover.performClose(sender)
         } else {
             if let button = statusItem.button {
+                NSApp.activate(ignoringOtherApps: true)
                 if let vc = popover.contentViewController as? MenuBarViewController {
                     vc.reload()
                 }
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                // Ensure controls render in active state and keyboard events reach the popover.
+                DispatchQueue.main.async { [weak self] in
+                    self?.popover.contentViewController?.view.window?.makeKey()
+                }
             }
         }
     }
@@ -75,6 +148,14 @@ class MenuBarManager: NSObject {
         if popover.isShown {
             popover.performClose(nil)
         }
+    }
+
+    @objc private func handleAppDidResignActive() {
+        closePopover()
+    }
+
+    @objc private func handleAppWillTerminate() {
+        teardown()
     }
 
     @objc private func handleTelemetryChanged() {
@@ -239,7 +320,6 @@ class MenuBarViewController: NSViewController {
 
             // Dot setup
             let dotAttachment = NSTextAttachment()
-            let dotSize = NSSize(width: 10, height: 10)
             let image = NSImage(size: NSSize(width: 12, height: 12))  // slight padding
             image.lockFocus()
             ws.color.nsColor.set()
