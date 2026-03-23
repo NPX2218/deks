@@ -7,6 +7,22 @@ import Foundation
 class WindowTracker {
     static let shared = WindowTracker()
 
+    private func matches(ref: WindowRef, bundleID: String, title: String, windowIndex: Int) -> Bool {
+        guard ref.bundleID == bundleID else { return false }
+
+        switch ref.matchRule {
+        case .exactTitle(let storedTitle):
+            return title == storedTitle
+        case .titleContains(let fragment):
+            guard !fragment.isEmpty else { return false }
+            return title.localizedCaseInsensitiveContains(fragment)
+        case .appOnly(let storedBundle):
+            return storedBundle == bundleID
+        case .windowIndex(let storedBundle, let storedIndex):
+            return storedBundle == bundleID && storedIndex == windowIndex
+        }
+    }
+
     private func setBoolAttribute(_ element: AXUIElement, attribute: CFString, value: Bool) -> Bool
     {
         let cfValue: CFTypeRef = (value ? kCFBooleanTrue : kCFBooleanFalse) as CFTypeRef
@@ -66,7 +82,7 @@ class WindowTracker {
             let bundleID = app.bundleIdentifier ?? ""
             let appName = app.localizedName ?? bundleID
 
-            for window in axWindows {
+            for (appWindowIndex, window) in axWindows.enumerated() {
                 activeElements.append(window)
 
                 if sessionWindows.values.contains(where: { CFEqual($0.axElement, window) }) {
@@ -92,7 +108,7 @@ class WindowTracker {
                 var matchedID: UUID?
                 for ws in workspaces {
                     if let ref = ws.assignedWindows.first(where: {
-                        $0.bundleID == bundleID && $0.windowTitle == title
+                        matches(ref: $0, bundleID: bundleID, title: title, windowIndex: appWindowIndex)
                     }) {
                         if sessionWindows[ref.id] == nil {
                             matchedID = ref.id

@@ -67,7 +67,9 @@ class WorkspaceManager {
                         let current = sessionWin.currentTitle
                         if updatedRef.windowTitle != current {
                             updatedRef.windowTitle = current
-                            updatedRef.matchRule = .exactTitle(current)  // Ensure JSON reboot matching is locked sequentially
+                            if case .exactTitle = updatedRef.matchRule {
+                                updatedRef.matchRule = .exactTitle(current)
+                            }
                             changed = true
                         }
                         validRefs.append(updatedRef)
