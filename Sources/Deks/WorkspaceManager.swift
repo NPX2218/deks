@@ -181,13 +181,11 @@ class WorkspaceManager {
         // Pass 2: Iteratively un-minimize and restore assigned windows specifically from BACK to FRONT relying on our mathematical Z-order array!
         for ref in workspace.assignedWindows.reversed() {
             if let sessionWin = WindowTracker.shared.sessionWindows[ref.id] {
-                WindowTracker.shared.showSessionWindow(sessionWin)
-                let value = kCFBooleanTrue as CFTypeRef
-                AXUIElementSetAttributeValue(
-                    sessionWin.axElement, kAXMainAttribute as CFString, value)
-                AXUIElementSetAttributeValue(
-                    sessionWin.axElement, kAXFocusedWindowAttribute as CFString, value)
-                AXUIElementPerformAction(sessionWin.axElement, kAXRaiseAction as CFString)
+                let shown = WindowTracker.shared.showSessionWindow(sessionWin)
+                let focused = WindowTracker.shared.focusAndRaiseSessionWindow(sessionWin)
+                if !shown || !focused {
+                    print("Warning: Failed to fully restore window \(sessionWin.bundleID) / \(sessionWin.currentTitle)")
+                }
 
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.002))
             }
