@@ -17,7 +17,8 @@ class IdleManager {
 
     func checkIdleWorkspaces() {
         let now = Date()
-        let timeout: TimeInterval = 5 * 60  // 5 mins
+        let configuredMinutes = max(1, Persistence.loadPreferences().idleTimeoutMinutes)
+        let timeout: TimeInterval = TimeInterval(configuredMinutes * 60)
 
         let allSessionWindows = WindowTracker.shared.sessionWindows.values
         let activeWsId = WorkspaceManager.shared.activeWorkspaceId
