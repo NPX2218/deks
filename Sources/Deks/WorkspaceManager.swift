@@ -184,7 +184,9 @@ class WorkspaceManager {
                 let shown = WindowTracker.shared.showSessionWindow(sessionWin)
                 let focused = WindowTracker.shared.focusAndRaiseSessionWindow(sessionWin)
                 if !shown || !focused {
-                    print("Warning: Failed to fully restore window \(sessionWin.bundleID) / \(sessionWin.currentTitle)")
+                    print(
+                        "Warning: Failed to fully restore window \(sessionWin.bundleID) / \(sessionWin.currentTitle)"
+                    )
                 }
 
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.002))

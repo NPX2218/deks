@@ -7,7 +7,8 @@ import Foundation
 class WindowTracker {
     static let shared = WindowTracker()
 
-    private func setBoolAttribute(_ element: AXUIElement, attribute: CFString, value: Bool) -> Bool {
+    private func setBoolAttribute(_ element: AXUIElement, attribute: CFString, value: Bool) -> Bool
+    {
         let cfValue: CFTypeRef = (value ? kCFBooleanTrue : kCFBooleanFalse) as CFTypeRef
         let result = AXUIElementSetAttributeValue(element, attribute, cfValue)
         return result == .success
@@ -177,7 +178,8 @@ class WindowTracker {
             attribute: kAXFocusedAttribute as CFString,
             value: true
         )
-        let raised = AXUIElementPerformAction(sessionWin.axElement, kAXRaiseAction as CFString) == .success
+        let raised =
+            AXUIElementPerformAction(sessionWin.axElement, kAXRaiseAction as CFString) == .success
         return mainSet && focusedSet && raised
     }
 
