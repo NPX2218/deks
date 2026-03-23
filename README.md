@@ -149,28 +149,28 @@ Deks uses the macOS Accessibility API (`AXUIElement`) to enumerate and control i
 
 Deks stores its config in `~/Library/Application Support/Deks/`:
 
-| File | Contents |
-|------|----------|
-| `workspaces.json` | Workspace definitions, window assignments, colors |
-| `preferences.json` | Hotkeys, idle timeout, new window behavior |
+| File               | Contents                                          |
+| ------------------ | ------------------------------------------------- |
+| `workspaces.json`  | Workspace definitions, window assignments, colors |
+| `preferences.json` | Hotkeys, idle timeout, new window behavior        |
 
 ### New window behavior
 
 When a new window opens that isn't assigned to any workspace:
 
-| Mode | Behavior |
-|------|----------|
-| **Auto-assign** (default) | Joins the currently active workspace |
-| **Prompt** | Notification asks which workspace to assign |
-| **Floating** | Visible in all workspaces |
+| Mode                      | Behavior                                    |
+| ------------------------- | ------------------------------------------- |
+| **Auto-assign** (default) | Joins the currently active workspace        |
+| **Prompt**                | Notification asks which workspace to assign |
+| **Floating**              | Visible in all workspaces                   |
 
 ### Hotkeys
 
-| Default | Action |
-|---------|--------|
+| Default     | Action                  |
+| ----------- | ----------------------- |
 | `⌃1` – `⌃9` | Switch to workspace 1–9 |
-| `⌥Tab` | Open quick switcher |
-| `⌃⇧N` | Create new workspace |
+| `⌥Tab`      | Open quick switcher     |
+| `⌃⇧N`       | Create new workspace    |
 
 All hotkeys are configurable in Settings.
 

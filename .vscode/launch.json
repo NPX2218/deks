@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:deks}",
+      "name": "Debug Deks",
+      "target": "Deks",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug Deks"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:deks}",
+      "name": "Release Deks",
+      "target": "Deks",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release Deks"
+    }
+  ]
+}

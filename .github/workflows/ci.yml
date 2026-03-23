@@ -30,6 +30,7 @@ jobs:
         run: |
           xcodebuild \
             -scheme Deks \
+            -destination 'platform=macOS' \
             -configuration Debug \
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="-" \
@@ -40,6 +41,7 @@ jobs:
         run: |
           xcodebuild \
             -scheme Deks \
+            -destination 'platform=macOS' \
             -configuration Debug \
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="-" \
