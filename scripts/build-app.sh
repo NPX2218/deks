@@ -12,6 +12,14 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICON_SOURCE="assets/deks-icon-512.png"
 ICON_SET="assets/DeksIcon.iconset"
 ICNS_FILE="assets/AppIcon.icns"
+SIGN_IDENTITY="${DEKS_SIGN_IDENTITY:--}"
+
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "valid identities found"; then
+        echo "⚠️  No code-signing identity detected."
+        echo "⚠️  Deks will be ad-hoc signed, and macOS Accessibility trust may need re-toggle after rebuilds."
+    fi
+fi
 
 echo "🔨 Building Deks Release Executable..."
 swift build -c release
@@ -71,5 +79,8 @@ EOF
 echo "🚀 Copying compiled binary into bundle..."
 cp .build/release/Deks "$MACOS_DIR/"
 
+echo "🔏 Signing app bundle with identity: $SIGN_IDENTITY"
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
+
 echo "✅ Success! Packed tightly into Deks.app."
-echo "You can now drag Deks.app into your /Applications folder, or simply double click to run!"
+echo "You can now copy Deks.app into /Applications, replacing in place to preserve Accessibility permissions when possible."

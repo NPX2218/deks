@@ -202,6 +202,42 @@ open Deks.xcodeproj
 
 Deks requires **Accessibility** permission to manage windows. On first launch, macOS will prompt you to grant this in System Settings → Privacy & Security → Accessibility.
 
+### Avoid repeated re-approval during local builds
+
+When reinstalling locally, replace the app **in place** instead of deleting/re-adding it:
+
+```bash
+./scripts/install-app.sh
+```
+
+For the best chance of keeping permission stable across updates, use a consistent signing identity:
+
+```bash
+DEKS_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/install-app.sh
+```
+
+If macOS still shows Deks as disabled, toggle Deks off and on in Accessibility once, then click **Check Again** in the in-app setup window.
+
+If you are developing locally without an Apple signing identity, Deks is ad-hoc signed and macOS may treat rebuilt binaries as new trust targets.
+
+To reinstall without changing the binary/signature hash while testing permissions:
+
+```bash
+DEKS_SKIP_BUILD=1 ./scripts/install-app.sh
+```
+
+To run a clean permission reset and reinstall in one command:
+
+```bash
+DEKS_RESET_ACCESSIBILITY=1 ./scripts/install-app.sh
+```
+
+If macOS permission state is badly stuck, use a global reset (this resets Accessibility permissions for all apps):
+
+```bash
+DEKS_RESET_ACCESSIBILITY=1 DEKS_RESET_SCOPE=global ./scripts/install-app.sh
+```
+
 No other permissions are required. Deks does not access your files, camera, microphone, or network.
 
 ## Privacy
