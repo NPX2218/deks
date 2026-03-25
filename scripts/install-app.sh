@@ -6,9 +6,22 @@ cd "$(dirname "$0")/.." || exit 1
 APP_NAME="Deks"
 APP_BUNDLE="$APP_NAME.app"
 DESTINATION="/Applications/$APP_BUNDLE"
+BACKUP_ROOT="$HOME/Library/Application Support/Deks/Backups"
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DEST="$BACKUP_ROOT/$APP_NAME-$TIMESTAMP.app"
 SKIP_BUILD="${DEKS_SKIP_BUILD:-0}"
 RESET_ACCESSIBILITY="${DEKS_RESET_ACCESSIBILITY:-0}"
 RESET_SCOPE="${DEKS_RESET_SCOPE:-bundle}"
+
+restore_backup_on_error() {
+	if [ -d "$BACKUP_DEST" ]; then
+		echo "Install failed. Restoring previous /Applications/$APP_BUNDLE backup..."
+		rm -rf "$DESTINATION"
+		ditto "$BACKUP_DEST" "$DESTINATION"
+	fi
+}
+
+trap restore_backup_on_error ERR
 
 if [ "$RESET_ACCESSIBILITY" = "1" ]; then
 	printf "Pre-step: Resetting Accessibility permission state (scope=%s)...\n" "$RESET_SCOPE"
@@ -30,6 +43,11 @@ printf "Step 2/4: Quitting running app instance if needed...\n"
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 printf "Step 3/4: Installing into /Applications (replace in place)...\n"
+mkdir -p "$BACKUP_ROOT"
+if [ -d "$DESTINATION" ]; then
+	printf "      Creating rollback backup at %s ...\n" "$BACKUP_DEST"
+	ditto "$DESTINATION" "$BACKUP_DEST"
+fi
 ditto "$APP_BUNDLE" "$DESTINATION"
 
 # Avoid accidentally launching a stale local bundle from the repo root.
@@ -37,6 +55,8 @@ rm -rf "$APP_BUNDLE"
 
 printf "Step 4/4: Launching app...\n"
 open "$DESTINATION"
+
+trap - ERR
 
 cat <<'EOF'
 

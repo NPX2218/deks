@@ -4,7 +4,10 @@ import Foundation
 class Persistence {
     static let defaultPreferences = Preferences(
         defaultNewWindowBehavior: .autoAssignToActive,
-        idleTimeoutMinutes: 5
+        idleTimeoutMinutes: 5,
+        showLogoInMenuBar: false,
+        developerDiagnosticsEnabled: false,
+        workspaceSwitchModifier: .control
     )
 
     static var appSupportDir: URL {
@@ -35,8 +38,13 @@ class Persistence {
             let prefs = try? JSONDecoder().decode(Preferences.self, from: data)
         else {
             savePreferences(defaultPreferences)
+            UserDefaults.standard.set(
+                defaultPreferences.developerDiagnosticsEnabled,
+                forKey: "deks.devLogs"
+            )
             return defaultPreferences
         }
+        UserDefaults.standard.set(prefs.developerDiagnosticsEnabled, forKey: "deks.devLogs")
         return prefs
     }
 

@@ -2,6 +2,10 @@ import AppKit
 @preconcurrency import ApplicationServices
 import Foundation
 
+extension Notification.Name {
+    static let requestPermissionWalkthrough = Notification.Name("requestPermissionWalkthrough")
+}
+
 @main
 @MainActor
 struct DeksApp {
@@ -22,16 +26,37 @@ struct DeksApp {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var didSetupApp = false
     private var permissionPollTimer: Timer?
-    private var permissionPollAttempts = 0
+    private var didRequestPermissionPromptThisLaunch = false
     private var permissionWindowController: PermissionOnboardingWindowController?
+    private let onboardingCompleteKey = "deks.onboardingComplete"
 
     private let permissionPollInterval: TimeInterval = 1.0
-    private let delayedHintAttemptThreshold = 15
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        TelemetryManager.shared.markLaunch()
         // Always show the app in the menu bar immediately so startup feels responsive.
         MenuBarManager.shared.setup()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePermissionWalkthroughRequest),
+            name: .requestPermissionWalkthrough,
+            object: nil
+        )
         requestPermissionsAndStart()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        WorkspaceManager.shared.persistActiveWorkspaceWindowOrder()
+        NotificationCenter.default.removeObserver(self)
+        TelemetryManager.shared.markCleanShutdown()
+    }
+
+    @objc private func handlePermissionWalkthroughRequest() {
+        guard !didSetupApp else { return }
+        ConfigPanelController.orderOutVisibleWindowIfInitialized()
+        requestSystemPermissionPrompt()
+        openAccessibilitySettings()
+        beginPermissionPolling()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -42,21 +67,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func requestPermissionsAndStart() {
         let isTrusted = AXIsProcessTrusted()
+        TelemetryManager.shared.recordSync(
+            event: "accessibility_check",
+            metadata: ["trusted": isTrusted ? "true" : "false"]
+        )
 
         if isTrusted {
             completeSetupIfNeeded()
         } else {
-            showPermissionWindowIfNeeded()
-            updatePermissionUI()
+            UserDefaults.standard.set(false, forKey: onboardingCompleteKey)
+            if !didRequestPermissionPromptThisLaunch {
+                didRequestPermissionPromptThisLaunch = true
+                requestSystemPermissionPrompt()
+            }
             beginPermissionPolling()
         }
     }
 
     private func requestSystemPermissionPrompt() {
+        TelemetryManager.shared.recordSync(
+            event: "native_permission_prompt_requested", level: "debug")
+
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
         beginPermissionPolling()
-        updatePermissionUI()
     }
 
     private func beginPermissionPolling() {
@@ -68,52 +102,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if AXIsProcessTrusted() {
-                    self.permissionPollTimer?.invalidate()
-                    self.permissionPollTimer = nil
-                    self.permissionPollAttempts = 0
                     self.completeSetupIfNeeded()
-                } else {
-                    self.permissionPollAttempts += 1
-                    self.updatePermissionUI()
                 }
             }
         }
-    }
-
-    private func showPermissionWindowIfNeeded() {
-        if permissionWindowController == nil {
-            permissionWindowController = PermissionOnboardingWindowController(
-                onRequestPermission: { [weak self] in self?.requestSystemPermissionPrompt() },
-                onOpenSettings: { [weak self] in self?.openAccessibilitySettings() },
-                onCheckAgain: { [weak self] in self?.requestPermissionsAndStart() },
-                onRelaunch: { [weak self] in self?.relaunchApp() },
-                onQuit: { NSApp.terminate(nil) }
-            )
-        }
-
-        NSApp.activate(ignoringOtherApps: true)
-        permissionWindowController?.showWindow(nil)
-    }
-
-    private func updatePermissionUI() {
-        guard let controller = permissionWindowController else { return }
-        let waitingLong = permissionPollAttempts >= delayedHintAttemptThreshold
-
-        if waitingLong {
-            controller.updateStatus(
-                title: "Still waiting for Accessibility permission",
-                detail:
-                    "If you already enabled Deks, macOS may still be applying it. If stuck, toggle Deks off/on in Accessibility, press Check Again, then use Relaunch Deks."
-            )
-        } else {
-            controller.updateStatus(
-                title: "Step 1: Enable Accessibility for Deks",
-                detail:
-                    "Click Request Permission, enable Deks in Accessibility settings, then click Check Again."
-            )
-        }
-
-        controller.updateContext(bundlePath: Bundle.main.bundlePath)
     }
 
     private func openAccessibilitySettings() {
@@ -129,13 +121,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func completeSetupIfNeeded() {
         guard !didSetupApp else { return }
         didSetupApp = true
+        UserDefaults.standard.set(true, forKey: onboardingCompleteKey)
         permissionPollTimer?.invalidate()
         permissionPollTimer = nil
-        permissionPollAttempts = 0
         permissionWindowController?.closeWindow()
         permissionWindowController = nil
-        print("Accessibility permissions granted.")
+        WorkspaceManager.shared.setManualOrganizationMode(false)
+        TelemetryManager.shared.record(event: "accessibility_permissions_granted")
         setupApp()
+        showPostPermissionAssignmentHint()
     }
 
     private func relaunchApp() {
@@ -151,9 +145,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if WorkspaceManager.shared.workspaces.isEmpty {
             let defaultWs = WorkspaceManager.shared.createWorkspace(name: "Default", color: .blue)
             WorkspaceManager.shared.activeWorkspaceId = defaultWs.id
-            print("Created Default workspace.")
+            TelemetryManager.shared.record(event: "default_workspace_created")
         } else {
-            print("Loaded workspaces: \(WorkspaceManager.shared.workspaces.count)")
+            TelemetryManager.shared.record(
+                event: "workspaces_loaded",
+                metadata: ["count": String(WorkspaceManager.shared.workspaces.count)]
+            )
         }
 
         IdleManager.shared.start()
@@ -161,21 +158,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Move heavy window discovery to background to let UI appear immediately
         Task {
+            let seededCount = WorkspaceManager.shared.seedActiveWorkspaceFromSessionIfNeeded()
+            if seededCount > 0 {
+                TelemetryManager.shared.record(
+                    event: "workspace_seeded",
+                    metadata: ["windowCount": String(seededCount)]
+                )
+            }
+
             // Discover first, then rebalance visibility without reassigning everything to active.
             WindowTracker.shared.synchronizeSession(workspaces: WorkspaceManager.shared.workspaces)
             WorkspaceManager.shared.startStartupRebalance()
 
             let windows = WindowTracker.shared.discoverWindows()
-            print("Discovered \(windows.count) visible windows on screen.")
-            for win in windows {
-                print("  - \(win.appName): \(win.title)")
-            }
+            TelemetryManager.shared.record(
+                event: "windows_discovered",
+                metadata: ["count": String(windows.count)]
+            )
+        }
+    }
+
+    private func showPostPermissionAssignmentHint() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "Setup complete"
+            alert.informativeText =
+                "Now open the Deks menu bar popup and quickly reorganize your windows into the right workspaces. This makes switching behavior predictable from the start."
+            alert.addButton(withTitle: "Got it")
+
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
     }
 }
 
 @MainActor
-final class PermissionOnboardingWindowController: NSWindowController {
+final class PermissionOnboardingWindowController: NSWindowController, NSWindowDelegate {
     private let statusTitleLabel = NSTextField(labelWithString: "")
     private let statusDetailLabel = NSTextField(labelWithString: "")
     private let contextLabel = NSTextField(labelWithString: "")
@@ -201,14 +220,17 @@ final class PermissionOnboardingWindowController: NSWindowController {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 300),
-            styleMask: [.titled, .closable],
+            styleMask: [.titled],
             backing: .buffered,
             defer: false
         )
         window.center()
         window.title = "Finish Deks Setup"
         window.isReleasedWhenClosed = false
+        window.level = .normal
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         super.init(window: window)
+        window.delegate = self
 
         configureUI()
     }
@@ -255,10 +277,12 @@ final class PermissionOnboardingWindowController: NSWindowController {
             title: "Check Again", target: self, action: #selector(checkAgainPressed))
         let relaunchButton = NSButton(
             title: "Relaunch Deks", target: self, action: #selector(relaunchPressed))
+        let deleteButton = NSButton(
+            title: "Delete Deks", target: self, action: #selector(deletePressed))
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(quitPressed))
 
         let buttonStack = NSStackView(views: [
-            requestButton, openButton, checkButton, relaunchButton, quitButton,
+            requestButton, openButton, checkButton, relaunchButton, deleteButton, quitButton,
         ])
         buttonStack.orientation = .horizontal
         buttonStack.spacing = 12
@@ -298,22 +322,40 @@ final class PermissionOnboardingWindowController: NSWindowController {
     }
 
     @objc private func requestPermissionPressed() {
+        TelemetryManager.shared.recordSync(
+            event: "onboarding_request_permission_clicked", level: "debug")
         onRequestPermission()
     }
 
     @objc private func openSettingsPressed() {
+        TelemetryManager.shared.recordSync(
+            event: "onboarding_open_settings_clicked", level: "debug")
         onOpenSettings()
     }
 
     @objc private func checkAgainPressed() {
+        TelemetryManager.shared.recordSync(event: "onboarding_check_again_clicked", level: "debug")
         onCheckAgain()
     }
 
     @objc private func relaunchPressed() {
+        TelemetryManager.shared.recordSync(event: "onboarding_relaunch_clicked", level: "debug")
         onRelaunch()
     }
 
     @objc private func quitPressed() {
+        TelemetryManager.shared.recordSync(event: "onboarding_quit_clicked", level: "debug")
         onQuit()
+    }
+
+    @objc private func deletePressed() {
+        TelemetryManager.shared.recordSync(event: "onboarding_delete_clicked", level: "debug")
+        UninstallManager.confirmAndUninstall()
+    }
+
+    // MARK: - NSWindowDelegate: Prevent accidental closure
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSSound.beep()
+        return false
     }
 }

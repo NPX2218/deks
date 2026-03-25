@@ -12,5 +12,9 @@ let package = Package(
         .executableTarget(
             name: "Deks"
         ),
+        .testTarget(
+            name: "DeksTests",
+            dependencies: ["Deks"]
+        ),
     ]
 )

@@ -11,6 +11,9 @@ extension Notification.Name {
 @MainActor
 class WindowTracker {
     static let shared = WindowTracker()
+    private let singleInstanceBundleIDs: Set<String> = [
+        "com.spotify.client"
+    ]
 
     struct OperationTelemetry {
         var hideFailures: Int = 0
@@ -25,8 +28,18 @@ class WindowTracker {
     }
 
     private(set) var operationTelemetry = OperationTelemetry()
+    private var lastFailureBySignature: [String: Date] = [:]
+    private let failureLogThrottleSeconds: TimeInterval = 4.0
 
     private func recordFailure(operation: String, detail: String) {
+        let signature = "\(operation)|\(detail)"
+        if let last = lastFailureBySignature[signature],
+            Date().timeIntervalSince(last) < failureLogThrottleSeconds
+        {
+            return
+        }
+        lastFailureBySignature[signature] = Date()
+
         switch operation {
         case "hide":
             operationTelemetry.hideFailures += 1
@@ -40,6 +53,14 @@ class WindowTracker {
 
         operationTelemetry.lastFailureAt = Date()
         operationTelemetry.lastFailureDetail = detail
+        TelemetryManager.shared.record(
+            event: "window_operation_failure",
+            level: "warning",
+            metadata: [
+                "operation": operation,
+                "detail": detail,
+            ]
+        )
         NotificationCenter.default.post(name: .windowOperationTelemetryChanged, object: nil)
     }
 
@@ -52,8 +73,13 @@ class WindowTracker {
             "Window ops failures: \(t.totalFailures) (hide \(t.hideFailures), show \(t.showFailures), focus \(t.focusFailures))"
     }
 
-    private func matches(ref: WindowRef, bundleID: String, title: String, windowIndex: Int) -> Bool
-    {
+    private func matches(
+        ref: WindowRef,
+        bundleID: String,
+        title: String,
+        windowIndex: Int,
+        windowNumber: Int?
+    ) -> Bool {
         guard ref.bundleID == bundleID else { return false }
 
         switch ref.matchRule {
@@ -66,14 +92,42 @@ class WindowTracker {
             return storedBundle == bundleID
         case .windowIndex(let storedBundle, let storedIndex):
             return storedBundle == bundleID && storedIndex == windowIndex
+        case .windowNumber(let storedBundle, let storedNumber):
+            guard let windowNumber else { return false }
+            return storedBundle == bundleID && storedNumber == windowNumber
         }
     }
 
     private func setBoolAttribute(_ element: AXUIElement, attribute: CFString, value: Bool) -> Bool
     {
+        // Fast path: if attribute already equals the desired value, avoid a write and treat as success.
+        if let current = boolAttributeValue(element, attribute: attribute), current == value {
+            return true
+        }
+
         let cfValue: CFTypeRef = (value ? kCFBooleanTrue : kCFBooleanFalse) as CFTypeRef
         let result = AXUIElementSetAttributeValue(element, attribute, cfValue)
-        return result == .success
+        if result == .success {
+            return true
+        }
+
+        // Some apps return transient AX errors even when state eventually applies.
+        if let currentAfter = boolAttributeValue(element, attribute: attribute),
+            currentAfter == value
+        {
+            return true
+        }
+
+        return false
+    }
+
+    private func boolAttributeValue(_ element: AXUIElement, attribute: CFString) -> Bool? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &ref) == .success else { return nil }
+        if let number = ref as? NSNumber {
+            return number.boolValue
+        }
+        return nil
     }
 
     private func stableWindowID(seed: String) -> UUID {
@@ -95,6 +149,7 @@ class WindowTracker {
         let bundleID: String
         let appName: String
         let initialTitle: String
+        let windowNumber: Int?
 
         var currentTitle: String {
             var ref: CFTypeRef?
@@ -139,6 +194,21 @@ class WindowTracker {
                 _ = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
                 let title = titleRef as? String ?? ""
 
+                var windowNumberRef: CFTypeRef?
+                let windowNumberResult = AXUIElementCopyAttributeValue(
+                    window,
+                    "AXWindowNumber" as CFString,
+                    &windowNumberRef
+                )
+                let windowNumber: Int?
+                if windowNumberResult == .success,
+                    let number = windowNumberRef as? NSNumber
+                {
+                    windowNumber = number.intValue
+                } else {
+                    windowNumber = nil
+                }
+
                 // Finder exposes a desktop pseudo-window with no title that cannot be restored like
                 // a standard user window. Ignore it to prevent noisy restore failures.
                 if bundleID == "com.apple.finder"
@@ -163,7 +233,12 @@ class WindowTracker {
                 for ws in workspaces {
                     if let ref = ws.assignedWindows.first(where: {
                         matches(
-                            ref: $0, bundleID: bundleID, title: title, windowIndex: appWindowIndex)
+                            ref: $0,
+                            bundleID: bundleID,
+                            title: title,
+                            windowIndex: appWindowIndex,
+                            windowNumber: windowNumber
+                        )
                     }) {
                         if sessionWindows[ref.id] == nil {
                             matchedID = ref.id
@@ -172,21 +247,41 @@ class WindowTracker {
                     }
                 }
 
+                // Fallback for single-instance apps whose window title/number can drift
+                // across restart (Spotify). If exactly one unbound ref exists for this app,
+                // rebind this live window to that saved ref id.
+                if matchedID == nil,
+                    singleInstanceBundleIDs.contains(bundleID)
+                {
+                    let candidates = workspaces
+                        .flatMap { $0.assignedWindows }
+                        .filter { $0.bundleID == bundleID && sessionWindows[$0.id] == nil }
+
+                    if candidates.count == 1 {
+                        matchedID = candidates[0].id
+                    }
+                }
+
                 let id: UUID
                 if let existing = matchedID {
                     id = existing
                 } else {
-                    let titleKey = "\(bundleID)|\(title)"
-                    let occurrence = (titleOccurrences[titleKey] ?? 0) + 1
-                    titleOccurrences[titleKey] = occurrence
+                    let baseSeed: String
+                    if let windowNumber {
+                        baseSeed = "\(bundleID)|windowNumber:\(windowNumber)"
+                    } else {
+                        let titleKey = "\(bundleID)|\(title)"
+                        let occurrence = (titleOccurrences[titleKey] ?? 0) + 1
+                        titleOccurrences[titleKey] = occurrence
+                        baseSeed = "\(bundleID)|\(title)|\(occurrence)"
+                    }
 
-                    var seed = "\(bundleID)|\(title)|\(occurrence)"
-                    var candidate = stableWindowID(seed: seed)
+                    var candidate = stableWindowID(seed: baseSeed)
                     var salt = 1
 
                     while sessionWindows[candidate] != nil {
-                        seed = "\(bundleID)|\(title)|\(occurrence)|\(salt)"
-                        candidate = stableWindowID(seed: seed)
+                        let saltedSeed = "\(baseSeed)|\(salt)"
+                        candidate = stableWindowID(seed: saltedSeed)
                         salt += 1
                     }
 
@@ -199,7 +294,8 @@ class WindowTracker {
                     pid: pid,
                     bundleID: bundleID,
                     appName: appName,
-                    initialTitle: title
+                    initialTitle: title,
+                    windowNumber: windowNumber
                 )
             }
         }
@@ -261,7 +357,8 @@ class WindowTracker {
         )
         let raised =
             AXUIElementPerformAction(sessionWin.axElement, kAXRaiseAction as CFString) == .success
-        let success = mainSet && focusedSet && raised
+        // Some apps refuse kAXMain/kAXFocused writes but still raise correctly.
+        let success = raised || (mainSet && focusedSet)
         if !success {
             let detail =
                 "\(sessionWin.bundleID) / \(sessionWin.currentTitle) [main=\(mainSet), focus=\(focusedSet), raise=\(raised)]"

@@ -124,4 +124,95 @@ class HUDManager {
             }
         }
     }
+
+    func showToggleFeedback(enabled: Bool) {
+        fadeTimer?.invalidate()
+        window?.close()
+
+        let statusText = enabled ? "Deks Enabled" : "Deks Disabled"
+        let iconName = enabled ? "checkmark.circle.fill" : "xmark.circle.fill"
+
+        let panelWidth: CGFloat = 240
+        let panelHeight: CGFloat = 120
+        let rect = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
+
+        let panel = NSPanel(
+            contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
+            defer: false)
+        panel.level = .floating
+        panel.isFloatingPanel = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.center()
+
+        let visualEffect = NSVisualEffectView(frame: rect)
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        visualEffect.material = .hudWindow
+        visualEffect.wantsLayer = true
+        visualEffect.layer?.cornerRadius = 16
+        visualEffect.layer?.masksToBounds = true
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        visualEffect.addSubview(stack)
+
+        let label = NSTextField(labelWithString: statusText)
+        label.font = NSFont.systemFont(ofSize: 18, weight: .semibold)
+        label.textColor = .white
+        label.alignment = .center
+
+        let icon = NSImageView()
+        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
+            icon.image = image
+            icon.contentTintColor = enabled ? .systemGreen : .systemRed
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(icon)
+            NSLayoutConstraint.activate([
+                icon.widthAnchor.constraint(equalToConstant: 32),
+                icon.heightAnchor.constraint(equalToConstant: 32),
+            ])
+        }
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(label)
+
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: visualEffect.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: visualEffect.centerYAnchor),
+        ])
+
+        panel.contentView = visualEffect
+        panel.alphaValue = 0.0
+        panel.orderFront(nil)
+
+        self.window = panel
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            panel.animator().alphaValue = 1.0
+        }
+
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, let w = self.window else { return }
+                NSAnimationContext.runAnimationGroup(
+                    { context in
+                        context.duration = 0.3
+                        w.animator().alphaValue = 0.0
+                    },
+                    completionHandler: {
+                        Task { @MainActor [weak self, weak w] in
+                            guard let self, let w else { return }
+                            w.close()
+                            if self.window === w { self.window = nil }
+                        }
+                    })
+            }
+        }
+    }
 }

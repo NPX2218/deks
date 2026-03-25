@@ -12,7 +12,7 @@ struct Workspace: Codable, Identifiable {
 }
 
 enum WorkspaceColor: String, Codable {
-    case green, purple, coral, blue, amber, pink
+    case green, purple, coral, blue, amber, pink, red, mint
 }
 
 struct WindowRef: Codable, Identifiable {
@@ -20,6 +20,47 @@ struct WindowRef: Codable, Identifiable {
     var bundleID: String
     var windowTitle: String
     var matchRule: WindowMatchRule
+    var isPinned: Bool
+
+    init(
+        id: UUID,
+        bundleID: String,
+        windowTitle: String,
+        matchRule: WindowMatchRule,
+        isPinned: Bool = false
+    ) {
+        self.id = id
+        self.bundleID = bundleID
+        self.windowTitle = windowTitle
+        self.matchRule = matchRule
+        self.isPinned = isPinned
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case bundleID
+        case windowTitle
+        case matchRule
+        case isPinned
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        bundleID = try container.decode(String.self, forKey: .bundleID)
+        windowTitle = try container.decode(String.self, forKey: .windowTitle)
+        matchRule = try container.decode(WindowMatchRule.self, forKey: .matchRule)
+        isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(bundleID, forKey: .bundleID)
+        try container.encode(windowTitle, forKey: .windowTitle)
+        try container.encode(matchRule, forKey: .matchRule)
+        try container.encode(isPinned, forKey: .isPinned)
+    }
 }
 
 enum WindowMatchRule: Codable {
@@ -27,6 +68,7 @@ enum WindowMatchRule: Codable {
     case titleContains(String)
     case appOnly(String)
     case windowIndex(String, Int)
+    case windowNumber(String, Int)
 }
 
 struct TrackedWindow {
@@ -47,6 +89,67 @@ struct HotkeyCombo: Codable, Equatable, Hashable {
 struct Preferences: Codable {
     var defaultNewWindowBehavior: NewWindowBehavior
     var idleTimeoutMinutes: Int
+    var showLogoInMenuBar: Bool
+    var developerDiagnosticsEnabled: Bool
+    var workspaceSwitchModifier: WorkspaceSwitchModifier
+
+    init(
+        defaultNewWindowBehavior: NewWindowBehavior,
+        idleTimeoutMinutes: Int,
+        showLogoInMenuBar: Bool,
+        developerDiagnosticsEnabled: Bool,
+        workspaceSwitchModifier: WorkspaceSwitchModifier
+    ) {
+        self.defaultNewWindowBehavior = defaultNewWindowBehavior
+        self.idleTimeoutMinutes = idleTimeoutMinutes
+        self.showLogoInMenuBar = showLogoInMenuBar
+        self.developerDiagnosticsEnabled = developerDiagnosticsEnabled
+        self.workspaceSwitchModifier = workspaceSwitchModifier
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case defaultNewWindowBehavior
+        case idleTimeoutMinutes
+        case showLogoInMenuBar
+        case developerDiagnosticsEnabled
+        case workspaceSwitchModifier
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        defaultNewWindowBehavior = try container.decode(
+            NewWindowBehavior.self,
+            forKey: .defaultNewWindowBehavior
+        )
+        idleTimeoutMinutes = try container.decode(Int.self, forKey: .idleTimeoutMinutes)
+        showLogoInMenuBar =
+            try container.decodeIfPresent(Bool.self, forKey: .showLogoInMenuBar)
+            ?? false
+        developerDiagnosticsEnabled =
+            try container.decodeIfPresent(Bool.self, forKey: .developerDiagnosticsEnabled)
+            ?? false
+        workspaceSwitchModifier =
+            try container.decodeIfPresent(
+                WorkspaceSwitchModifier.self,
+                forKey: .workspaceSwitchModifier
+            )
+            ?? .control
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(defaultNewWindowBehavior, forKey: .defaultNewWindowBehavior)
+        try container.encode(idleTimeoutMinutes, forKey: .idleTimeoutMinutes)
+        try container.encode(showLogoInMenuBar, forKey: .showLogoInMenuBar)
+        try container.encode(developerDiagnosticsEnabled, forKey: .developerDiagnosticsEnabled)
+        try container.encode(workspaceSwitchModifier, forKey: .workspaceSwitchModifier)
+    }
+}
+
+enum WorkspaceSwitchModifier: String, Codable {
+    case control
+    case option
+    case command
 }
 
 enum NewWindowBehavior: String, Codable {
