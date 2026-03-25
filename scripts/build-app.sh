@@ -9,6 +9,7 @@ APP_DIR="$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+APP_VERSION="${DEKS_VERSION:-1.0.0}"
 ICON_SOURCE="assets/deks-icon-512.png"
 ICON_SET="assets/DeksIcon.iconset"
 ICNS_FILE="assets/AppIcon.icns"
@@ -63,9 +64,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleName</key>
     <string>Deks</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
@@ -82,5 +83,8 @@ cp .build/release/Deks "$MACOS_DIR/"
 echo "🔏 Signing app bundle with identity: $SIGN_IDENTITY"
 codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
 
-echo "✅ Success! Packed tightly into Deks.app."
+echo "🔍 Verifying signature..."
+codesign --verify --deep --strict "$APP_DIR"
+
+echo "✅ Success! Packed tightly into Deks.app (version $APP_VERSION)."
 echo "You can now copy Deks.app into /Applications, replacing in place to preserve Accessibility permissions when possible."

@@ -65,6 +65,28 @@ Download the latest `.dmg` from [**Releases**](https://github.com/NPX2218/deks/r
 
 Requires macOS 13.0 (Ventura) or later. Supports both Apple Silicon and Intel Macs.
 
+### Free unsigned release path (no paid Apple Developer account)
+
+If you do not have a paid Apple Developer account, you can still distribute Deks on GitHub.
+
+- Build and upload a `.zip` or `.dmg` release artifact.
+- Tell users the app is unsigned and not notarized.
+- Include first-launch trust steps in the release notes.
+
+Suggested first-launch steps for users:
+
+1. Move `Deks.app` to Applications.
+2. Right-click `Deks.app` and choose Open.
+3. Click Open in the warning dialog.
+4. If blocked, go to System Settings > Privacy & Security and click Open Anyway.
+5. After granting Accessibility permission, open the Deks popup/settings and reorganize windows into the correct workspaces so the initial layout matches your intent.
+
+Optional terminal fallback for advanced users:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Deks.app
+```
+
 ### Homebrew
 
 ```bash
@@ -80,10 +102,6 @@ See [Building from source](#building-from-source) below.
 ### 🪟 Window-level workspace switching
 
 Not just apps — individual windows. Three Brave windows can live in three different workspaces.
-
-### 🔍 Browser tab group awareness
-
-Deks reads browser window titles and tab groups via the Accessibility API, so you see "Brave — Canvas, Piazza" not just "Brave."
 
 ### ⚡ Instant hotkey switching
 
@@ -108,14 +126,6 @@ Press `⌥Tab` to open a Spotlight-style overlay. Type to filter, arrow keys to 
 ### 💤 Idle optimization
 
 Background workspaces can be frozen using `SIGSTOP`/`SIGCONT`. Your Social apps don't eat RAM while you're coding. They resume instantly when you switch back.
-
-### 🖼 Workspace wallpapers
-
-Each workspace gets its own desktop wallpaper that swaps on switch.
-
-### 🔕 Focus mode integration
-
-Workspaces tie into macOS Focus modes. Switch to "School" and Discord notifications silence automatically.
 
 ### 🚀 Launch on login
 
@@ -178,29 +188,28 @@ All hotkeys are configurable in Settings.
 
 ```bash
 # Prerequisites
-# - Xcode 15.0+
+# - Swift 5.9+ / Xcode 15.0+
 # - macOS 13.0+
 
 # Clone
 git clone https://github.com/NPX2218/deks.git
 cd deks
 
-# Install dependencies
-brew bundle
+# Build and install as a macOS app bundle
+./scripts/build-app.sh
+./scripts/install-app.sh
 
-# Generate Xcode project
-xcodegen generate
-
-# Build
-xcodebuild -scheme Deks -configuration Release
-
-# Or open in Xcode
-open Deks.xcodeproj
+# Or build with Swift Package Manager directly
+swift build -c release
 ```
 
 ## Permissions
 
 Deks requires **Accessibility** permission to manage windows. On first launch, macOS will prompt you to grant this in System Settings → Privacy & Security → Accessibility.
+
+If you install an unsigned build from GitHub, macOS Gatekeeper may block first launch until you approve it via right-click Open (or Open Anyway in Privacy & Security).
+
+After Accessibility is enabled, open the Deks popup and quickly reorganize window assignments once so future switches behave predictably.
 
 ### Avoid repeated re-approval during local builds
 
@@ -252,16 +261,16 @@ Deks is private by design:
 ## Roadmap
 
 - [x] Window-level workspace management
-- [x] Browser tab group awareness
 - [x] Instant hotkey switching
 - [x] Menu bar widget
 - [x] Quick switcher overlay
 - [x] Idle optimization (SIGSTOP/SIGCONT)
-- [x] Workspace wallpapers
-- [x] Focus mode integration
 - [x] Launch on login
-- [x] Floating windows
+- [x] Floating (pinned) windows
 - [x] Native HUD overlay
+- [ ] Browser tab group awareness
+- [ ] Workspace wallpapers
+- [ ] Focus mode integration
 - [ ] Workspace snapshots & restore across restarts
 - [ ] Smart rules engine (auto-assign by URL, app, display)
 - [ ] Launch sequences (one-click boot all apps for a workspace)

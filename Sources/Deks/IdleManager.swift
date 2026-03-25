@@ -68,9 +68,17 @@ class IdleManager {
             if suspendedPIDs.contains(pid) {
                 if kill(pid, SIGCONT) == 0 {
                     suspendedPIDs.remove(pid)
-                    print("Resumed inactive process \(pid) safely.")
+                    TelemetryManager.shared.record(
+                        event: "process_resumed",
+                        level: "debug",
+                        metadata: ["pid": String(pid)]
+                    )
                 } else {
-                    print("Warning: Failed to resume process \(pid).")
+                    TelemetryManager.shared.record(
+                        event: "process_resume_failed",
+                        level: "warning",
+                        metadata: ["pid": String(pid)]
+                    )
                 }
             }
         }
@@ -79,9 +87,17 @@ class IdleManager {
             if !suspendedPIDs.contains(pid) {
                 if kill(pid, SIGSTOP) == 0 {
                     suspendedPIDs.insert(pid)
-                    print("Frozen inactive process \(pid) successfully to save RAM.")
+                    TelemetryManager.shared.record(
+                        event: "process_frozen",
+                        level: "debug",
+                        metadata: ["pid": String(pid)]
+                    )
                 } else {
-                    print("Warning: Failed to freeze process \(pid).")
+                    TelemetryManager.shared.record(
+                        event: "process_freeze_failed",
+                        level: "warning",
+                        metadata: ["pid": String(pid)]
+                    )
                 }
             }
         }
@@ -90,12 +106,12 @@ class IdleManager {
     private func isSystemApp(pid: pid_t) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid) else { return true }
         let bundle = app.bundleIdentifier?.lowercased() ?? ""
-        let blacklist = [
+        let excludedBundles = [
             "com.apple.finder",
             "com.apple.dock",
             "com.apple.systemuiserver",
             "com.apple.loginwindow",
         ]
-        return blacklist.contains(bundle) || bundle.contains("deks")
+        return excludedBundles.contains(bundle) || bundle.contains("deks")
     }
 }
