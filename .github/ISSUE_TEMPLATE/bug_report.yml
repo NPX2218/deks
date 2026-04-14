@@ -13,7 +13,7 @@ body:
     attributes:
       label: Deks version
       description: Which version of Deks are you running?
-      placeholder: "e.g., 0.1.0"
+      placeholder: "e.g., 0.2.0"
     validations:
       required: true
 

@@ -4,6 +4,9 @@ import XCTest
 
 final class MigrationTests: XCTestCase {
     func testPreferencesDecodesLegacyPayloadWithoutLogoFlag() throws {
+        // Legacy payloads may still carry the removed `defaultNewWindowBehavior`
+        // key. Decoding must ignore it and fall back to defaults for any
+        // optional fields that were added later.
         let legacyJSON = """
             {
               "defaultNewWindowBehavior": "autoAssignToActive",
@@ -12,9 +15,9 @@ final class MigrationTests: XCTestCase {
             """.data(using: .utf8)!
 
         let decoded = try JSONDecoder().decode(Preferences.self, from: legacyJSON)
-        XCTAssertEqual(decoded.defaultNewWindowBehavior, .autoAssignToActive)
         XCTAssertEqual(decoded.idleTimeoutMinutes, 7)
         XCTAssertFalse(decoded.showLogoInMenuBar)
+        XCTAssertFalse(decoded.developerDiagnosticsEnabled)
         XCTAssertEqual(decoded.workspaceSwitchModifier, .control)
     }
 

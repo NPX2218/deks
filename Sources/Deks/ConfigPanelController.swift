@@ -886,6 +886,13 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
 
         WorkspaceManager.shared.saveWorkspaces()
         WorkspaceManager.shared.persistActiveWorkspaceWindowOrder()
+
+        // Live preview: hide/show the dragged window on screen so the user
+        // immediately sees the effect of their edit. Only touches the single
+        // window that was moved — windows in the active workspace that weren't
+        // part of this edit are left alone.
+        WorkspaceManager.shared.refreshVisibility(for: win.id)
+
         reloadData()
     }
 }

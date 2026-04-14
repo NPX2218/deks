@@ -12,14 +12,23 @@ class WorkspaceManager {
 
     var workspaces: [Workspace] = []
     var activeWorkspaceId: UUID?
+    /// The workspace that was active immediately before the current one.
+    /// Used by the quick switcher to implement ⌘Tab-style "tap and release to
+    /// jump back to the previous workspace" behavior.
+    private(set) var previousWorkspaceId: UUID?
     private var startupRebalanceInProgress = false
     private var startupRebalanceTask: Task<Void, Never>?
     private var manualOrganizationMode = false
     private var isDeksEnabled = true
     private var autoAssignerTimer: Timer?
+    private var autoAssignerTickCount: Int = 0
     private let appLaunchTime = Date()
     private var knownSessionWindowIDs = Set<UUID>()
     private var didInitializeAutoAssignBaseline = false
+    /// How often (in auto-assigner ticks, i.e. seconds) to capture the active
+    /// workspace z-order so the stored order tracks live window reordering
+    /// even when the user doesn't explicitly switch workspaces.
+    private let zOrderCaptureTickInterval: Int = 3
     
     // Track recently detected background apps to prevent duplicate launches
     private var detectedBackgroundApps: [String: Date] = [:]
@@ -238,41 +247,85 @@ class WorkspaceManager {
                 as? [[String: Any]]
         else { return }
 
-        var availableSessions = WindowTracker.shared.sessionWindows.values
-            .filter { workspaceRefIDs.contains($0.id) }
+        // Split the workspace's session windows into two pools:
+        //
+        //   • Reliable — has a stable CGWindowID from `_AXUIElementGetWindow`.
+        //     These are ONLY ever matched by exact cgWindowID, never by
+        //     title or PID heuristics.
+        //   • Unreliable — the private symbol failed for this element
+        //     (extremely rare with @_silgen_name bridging, but possible for
+        //     unusual apps). These can still be matched via title/PID
+        //     fallbacks as a best-effort.
+        //
+        // The split is critical: `CGWindowListCopyWindowInfo` returns every
+        // on-screen window in the system (tooltips, popups, menu bar items)
+        // and many of those share a PID with our real session windows. The
+        // previous implementation let those stray CGWindow entries consume
+        // real session windows via the PID-alone fallback, silently
+        // corrupting z-order for every workspace that had a multi-window
+        // app with any transient popup on screen.
+        var reliableSessions: [WindowTracker.SessionWindow] = []
+        var unreliableSessions: [WindowTracker.SessionWindow] = []
+        for session in WindowTracker.shared.sessionWindows.values
+        where workspaceRefIDs.contains(session.id) {
+            if session.cgWindowID != nil {
+                reliableSessions.append(session)
+            } else {
+                unreliableSessions.append(session)
+            }
+        }
+
         var orderedIds = [UUID]()
+        var heuristicFallbackCount = 0
 
         for info in windowList {
             let pid = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
             let title = info[kCGWindowName as String] as? String ?? ""
-            let cgWindowNumber = info[kCGWindowNumber as String] as? Int
-
-            var matchedIndex: Int?
-            // 1. Prefer exact PID + window number when available.
-            if let cgWindowNumber,
-                let idx = availableSessions.firstIndex(where: {
-                    $0.pid == pid && $0.windowNumber == cgWindowNumber
-                })
-            {
-                matchedIndex = idx
+            let cgWindowNumber = (info[kCGWindowNumber as String] as? NSNumber).map {
+                CGWindowID($0.uint32Value)
             }
-            // 2. Fallback: exact Title + PID
-            else if let idx = availableSessions.firstIndex(where: {
+
+            // 1. Preferred: exact CGWindowID match against the reliable pool.
+            if let cgWindowNumber,
+                let idx = reliableSessions.firstIndex(where: { $0.cgWindowID == cgWindowNumber })
+            {
+                let matchId = reliableSessions.remove(at: idx).id
+                if !orderedIds.contains(matchId) { orderedIds.append(matchId) }
+                continue
+            }
+
+            // 2 & 3. Heuristic fallbacks — ONLY against the unreliable pool.
+            // Never match unrelated CGWindowList entries (tooltips, popups,
+            // system menu items) against sessions that have a valid
+            // cgWindowID, since their ordering is already handled above.
+            if unreliableSessions.isEmpty { continue }
+
+            if let idx = unreliableSessions.firstIndex(where: {
                 $0.pid == pid && $0.currentTitle == title
             }) {
-                matchedIndex = idx
-            }
-            // 3. Last fallback to arbitrary PID for identical instances (e.g. some Chromium windows with sparse metadata)
-            else if let idx = availableSessions.firstIndex(where: { $0.pid == pid }) {
-                matchedIndex = idx
+                let matchId = unreliableSessions.remove(at: idx).id
+                if !orderedIds.contains(matchId) { orderedIds.append(matchId) }
+                heuristicFallbackCount += 1
+                continue
             }
 
-            if let idx = matchedIndex {
-                let matchId = availableSessions.remove(at: idx).id
-                if !orderedIds.contains(matchId) {
-                    orderedIds.append(matchId)
-                }
+            if let idx = unreliableSessions.firstIndex(where: { $0.pid == pid }) {
+                let matchId = unreliableSessions.remove(at: idx).id
+                if !orderedIds.contains(matchId) { orderedIds.append(matchId) }
+                heuristicFallbackCount += 1
+                continue
             }
+        }
+
+        if heuristicFallbackCount > 0 {
+            devLog(
+                "zorder_capture_heuristic_fallback",
+                metadata: [
+                    "workspaceId": id.uuidString,
+                    "count": String(heuristicFallbackCount),
+                    "unreliablePoolSize": String(unreliableSessions.count + heuristicFallbackCount),
+                ]
+            )
         }
 
         // Build deterministic order: observed front-to-back IDs first, then keep
@@ -311,24 +364,66 @@ class WorkspaceManager {
             return
         }
 
-        // Hide everything not in the target workspace.
+        // 1. Hide everything not assigned to the target workspace.
         for sessionWin in WindowTracker.shared.sessionWindows.values {
             if !workspace.assignedWindows.contains(where: { $0.id == sessionWin.id }) {
                 WindowTracker.shared.hideSessionWindow(sessionWin)
             }
         }
 
-        // Restore windows in back-to-front order so they stack correctly.
-        // assignedWindows[0] is the frontmost, so reversed() gives us
-        // back windows first, building up to the front.
-        for ref in workspace.assignedWindows.reversed() {
+        // 2. Unminimize every window in this workspace in a tight batch, no
+        // spacing — we rebuild z-order explicitly in steps 3 & 4, so we don't
+        // depend on the unminimize ordering to establish stacking.
+        var sessionWindowsInOrder: [WindowTracker.SessionWindow] = []
+        for ref in workspace.assignedWindows {
             if let sessionWin = WindowTracker.shared.sessionWindows[ref.id] {
                 _ = WindowTracker.shared.showSessionWindow(sessionWin)
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.002))
+                sessionWindowsInOrder.append(sessionWin)
             }
         }
 
-        // Raise the top window last so it ends up in front of everything.
+        // 3. Rebuild INTRA-app z-order: raise each window back-to-front via
+        // kAXRaise so that within each owning application's window stack,
+        // our stored front-most window actually sits on top.
+        for sessionWin in sessionWindowsInOrder.reversed() {
+            _ = WindowTracker.shared.raiseSessionWindow(sessionWin)
+        }
+
+        // 4. Rebuild CROSS-app z-order by activating each owning app in
+        // back-to-front order via NSRunningApplication.activate. This is the
+        // critical step: kAXRaise only reorders windows within a single
+        // app's internal stack — it cannot push one app behind another at
+        // the system level. Without an explicit activate call here, the
+        // cross-app stacking is whatever it happened to be before the
+        // switch, so a VSCode-in-front / Safari-behind workspace might
+        // restore with Safari on top just because Safari was last active.
+        //
+        // Each PID is activated once at its FRONTMOST occurrence. Processing
+        // the unique PID list in reverse means the frontmost window's app
+        // is activated last, ending up on top at the system level. For
+        // workspaces where each app has a single window (the common case)
+        // this produces a pixel-perfect cross-app z-order. Interleaved
+        // same-app windows remain a known limitation since macOS only
+        // orders windows at the app granularity without private SLS APIs.
+        var seenPIDs = Set<pid_t>()
+        var appsFrontToBack: [pid_t] = []
+        for sessionWin in sessionWindowsInOrder {
+            if seenPIDs.insert(sessionWin.pid).inserted {
+                appsFrontToBack.append(sessionWin.pid)
+            }
+        }
+        for pid in appsFrontToBack.reversed() {
+            guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
+            if #available(macOS 14.0, *) {
+                app.activate()
+            } else {
+                app.activate(options: [.activateIgnoringOtherApps])
+            }
+        }
+
+        // 5. Focus-raise the top window so keyboard events route to it and
+        // its app is guaranteed frontmost regardless of any race with the
+        // cross-app activation above.
         if focusTopWindow,
             let topRef = workspace.assignedWindows.first,
             let topSession = WindowTracker.shared.sessionWindows[topRef.id]
@@ -412,6 +507,11 @@ class WorkspaceManager {
             applyWorkspaceVisibility(workspace: workspace, focusTopWindow: true)
         }
 
+        // Remember the workspace we're leaving so ⌥Tab can jump back.
+        if let currentActive = activeWorkspaceId, currentActive != workspaceId {
+            previousWorkspaceId = currentActive
+        }
+
         activeWorkspaceId = workspaceId
         workspaces[wsIndex].lastActiveAt = Date()
         saveWorkspaces()
@@ -485,6 +585,70 @@ class WorkspaceManager {
         )
         workspaces[wsIndex].assignedWindows.append(reference)
         saveWorkspaces()
+    }
+
+    /// Move the currently focused window to the workspace at `index` (0-based)
+    /// without switching workspaces. Hides the window immediately if the
+    /// target workspace isn't the active one, and shows a brief HUD with the
+    /// target workspace.
+    @discardableResult
+    func sendFocusedWindow(toWorkspaceAt index: Int) -> Bool {
+        guard index >= 0, index < workspaces.count else { return false }
+        guard let session = WindowTracker.shared.getFrontmostSessionWindow() else { return false }
+        if session.appName == "Deks" { return false }
+
+        // Skip work if the window is already at the front of the target
+        // workspace — nothing for the user to observe.
+        if workspaces[index].assignedWindows.first?.id == session.id {
+            return false
+        }
+
+        let fallbackRef = makeWindowRef(from: session)
+        workspaces = WorkspaceMutations.moveWindowToFront(
+            of: workspaces,
+            windowID: session.id,
+            targetIndex: index,
+            fallbackRef: fallbackRef
+        )
+
+        let targetId = workspaces[index].id
+        saveWorkspaces()
+
+        // If the window isn't in the active workspace anymore, hide it so the
+        // user immediately sees it leave the current screen.
+        if targetId != activeWorkspaceId {
+            _ = WindowTracker.shared.hideSessionWindow(session)
+        }
+
+        TelemetryManager.shared.record(
+            event: "window_sent_to_workspace",
+            metadata: [
+                "workspaceId": targetId.uuidString,
+                "bundleID": session.bundleID,
+            ]
+        )
+
+        HUDManager.shared.show(workspace: workspaces[index])
+        MenuBarManager.shared.updateTitle()
+        return true
+    }
+
+    /// Re-apply visibility for a single window based on the active workspace's
+    /// assignment. Called from settings after a drag-drop so the user sees the
+    /// window immediately hide or show to match the pending edit.
+    func refreshVisibility(for windowID: UUID) {
+        guard let sessionWin = WindowTracker.shared.sessionWindows[windowID] else { return }
+
+        let belongsToActive = WorkspaceMutations.isWindowAssignedToActive(
+            windowID: windowID,
+            activeId: activeWorkspaceId,
+            workspaces: workspaces
+        )
+        if belongsToActive {
+            _ = WindowTracker.shared.showSessionWindow(sessionWin)
+        } else {
+            _ = WindowTracker.shared.hideSessionWindow(sessionWin)
+        }
     }
 
     func renameWorkspace(id: UUID, to newName: String) {
@@ -620,10 +784,26 @@ class WorkspaceManager {
         knownSessionWindowIDs = Set(WindowTracker.shared.sessionWindows.keys)
         didInitializeAutoAssignBaseline = true
 
-        autoAssignerTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        autoAssignerTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) {
+            [weak self] _ in
             Task { @MainActor in
-                guard self?.isDeksEnabled == true else { return }
-                self?.autoAssignNewWindows()
+                guard let self, self.isDeksEnabled else { return }
+                self.autoAssignNewWindows()
+
+                // Every few seconds, refresh the stored z-order of the
+                // active workspace so the next switch restores the most
+                // recent stacking. Without this, the stored order only
+                // updates at switch time and can lag behind reality if the
+                // user has been clicking between windows.
+                self.autoAssignerTickCount += 1
+                if self.autoAssignerTickCount >= self.zOrderCaptureTickInterval {
+                    self.autoAssignerTickCount = 0
+                    if !self.manualOrganizationMode,
+                        let activeId = self.activeWorkspaceId
+                    {
+                        self.captureDynamicZOrder(for: activeId)
+                    }
+                }
             }
         }
     }
@@ -995,6 +1175,7 @@ class WorkspaceManager {
         }
         let quickSwitcherModifiers = NSEvent.ModifierFlags([.option]).rawValue
 
+        // Switch-to-workspace hotkeys (user-configurable modifier + digit).
         for (index, ws) in workspaces.enumerated() {
             if index < baseKeyCodes.count {
                 let combo = HotkeyCombo(modifiers: workspaceModifiers, keyCode: baseKeyCodes[index])
@@ -1002,10 +1183,35 @@ class WorkspaceManager {
             }
         }
 
-        // Quick Switcher Map (Option + Tab)
+        // Send-current-window-to-workspace hotkeys (⌃⇧1 … ⌃⇧9). Moves the
+        // frontmost window into the Nth workspace without switching. Uses a
+        // stable modifier combination so it doesn't clash with the
+        // user-configurable switch modifier above unless they also pick
+        // Control+Shift, which is fine because the digit action is unambiguous.
+        let sendModifiers = NSEvent.ModifierFlags([.control, .shift]).rawValue
+        for (index, _) in workspaces.enumerated() {
+            if index < baseKeyCodes.count {
+                let combo = HotkeyCombo(modifiers: sendModifiers, keyCode: baseKeyCodes[index])
+                let capturedIndex = index
+                HotkeyManager.shared.registerGlobalCallback(hotkey: combo) {
+                    WorkspaceManager.shared.sendFocusedWindow(toWorkspaceAt: capturedIndex)
+                }
+            }
+        }
+
+        // Quick Switcher (⌥Tab forward, ⌥⇧Tab backward) — hold ⌥, tap Tab to
+        // cycle, release ⌥ to commit, Esc to cancel.
         let optionTab = HotkeyCombo(modifiers: quickSwitcherModifiers, keyCode: 48)
         HotkeyManager.shared.registerGlobalCallback(hotkey: optionTab) {
-            QuickSwitcher.shared.show()
+            QuickSwitcher.shared.activateHold(forward: true)
+        }
+
+        let optionShiftTab = HotkeyCombo(
+            modifiers: NSEvent.ModifierFlags([.option, .shift]).rawValue,
+            keyCode: 48
+        )
+        HotkeyManager.shared.registerGlobalCallback(hotkey: optionShiftTab) {
+            QuickSwitcher.shared.activateHold(forward: false)
         }
 
         // Create and switch to a new workspace (Control + Shift + N).

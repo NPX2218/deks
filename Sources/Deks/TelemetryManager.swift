@@ -5,6 +5,11 @@ final class TelemetryManager: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "com.deks.telemetry", qos: .utility)
     private let queueKey = DispatchSpecificKey<UInt8>()
+    private let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     private struct SessionState: Codable {
         var launchedAt: Date
@@ -43,7 +48,7 @@ final class TelemetryManager: @unchecked Sendable {
                     event: "unclean_shutdown_detected",
                     level: "warning",
                     metadata: [
-                        "previousLaunch": ISO8601DateFormatter().string(from: previous.launchedAt)
+                        "previousLaunch": self.isoFormatter.string(from: previous.launchedAt)
                     ]
                 )
             }
@@ -85,7 +90,7 @@ final class TelemetryManager: @unchecked Sendable {
 
     private func writeLine(event: String, level: String, metadata: [String: String]) {
         var payload: [String: String] = [
-            "time": ISO8601DateFormatter().string(from: Date()),
+            "time": isoFormatter.string(from: Date()),
             "level": level,
             "event": event,
         ]
@@ -99,12 +104,18 @@ final class TelemetryManager: @unchecked Sendable {
 
         line.append("\n")
         let url = eventsFileURL()
+        let data = Data(line.utf8)
+
+        // Create the file if it doesn't exist, then append via FileHandle so we
+        // never overwrite prior events.
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? data.write(to: url)
+            return
+        }
         if let handle = try? FileHandle(forWritingTo: url) {
             defer { try? handle.close() }
             _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: Data(line.utf8))
-        } else {
-            try? Data(line.utf8).write(to: url)
+            try? handle.write(contentsOf: data)
         }
     }
 }

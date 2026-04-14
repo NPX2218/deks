@@ -87,20 +87,17 @@ struct HotkeyCombo: Codable, Equatable, Hashable {
 }
 
 struct Preferences: Codable {
-    var defaultNewWindowBehavior: NewWindowBehavior
     var idleTimeoutMinutes: Int
     var showLogoInMenuBar: Bool
     var developerDiagnosticsEnabled: Bool
     var workspaceSwitchModifier: WorkspaceSwitchModifier
 
     init(
-        defaultNewWindowBehavior: NewWindowBehavior,
         idleTimeoutMinutes: Int,
         showLogoInMenuBar: Bool,
         developerDiagnosticsEnabled: Bool,
         workspaceSwitchModifier: WorkspaceSwitchModifier
     ) {
-        self.defaultNewWindowBehavior = defaultNewWindowBehavior
         self.idleTimeoutMinutes = idleTimeoutMinutes
         self.showLogoInMenuBar = showLogoInMenuBar
         self.developerDiagnosticsEnabled = developerDiagnosticsEnabled
@@ -108,7 +105,6 @@ struct Preferences: Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultNewWindowBehavior
         case idleTimeoutMinutes
         case showLogoInMenuBar
         case developerDiagnosticsEnabled
@@ -117,10 +113,6 @@ struct Preferences: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        defaultNewWindowBehavior = try container.decode(
-            NewWindowBehavior.self,
-            forKey: .defaultNewWindowBehavior
-        )
         idleTimeoutMinutes = try container.decode(Int.self, forKey: .idleTimeoutMinutes)
         showLogoInMenuBar =
             try container.decodeIfPresent(Bool.self, forKey: .showLogoInMenuBar)
@@ -138,7 +130,6 @@ struct Preferences: Codable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(defaultNewWindowBehavior, forKey: .defaultNewWindowBehavior)
         try container.encode(idleTimeoutMinutes, forKey: .idleTimeoutMinutes)
         try container.encode(showLogoInMenuBar, forKey: .showLogoInMenuBar)
         try container.encode(developerDiagnosticsEnabled, forKey: .developerDiagnosticsEnabled)
@@ -150,12 +141,6 @@ enum WorkspaceSwitchModifier: String, Codable {
     case control
     case option
     case command
-}
-
-enum NewWindowBehavior: String, Codable {
-    case autoAssignToActive
-    case prompt
-    case floating
 }
 
 struct AppState: Codable {

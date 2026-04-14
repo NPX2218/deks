@@ -342,8 +342,12 @@ class MenuBarViewController: NSViewController {
         let query = normalized(searchQuery)
 
         let focused = WindowTracker.shared.getFrontmostSessionWindow()
-        let activeName =
-            (focused?.appName == "Deks" || focused == nil) ? "No active window" : focused!.appName
+        let activeName: String
+        if let focused, focused.appName != "Deks" {
+            activeName = focused.appName
+        } else {
+            activeName = "No active window"
+        }
 
         // Active window context
         let activeRow = NSStackView()
@@ -412,7 +416,7 @@ class MenuBarViewController: NSViewController {
             quickAssignPopup.lastItem?.representedObject = ws.id
         }
 
-        quickAssignPopup.isEnabled = (focused != nil && focused!.appName != "Deks")
+        quickAssignPopup.isEnabled = (focused?.appName).map { $0 != "Deks" } ?? false
 
         if let focused = focused {
             // Set current assignment

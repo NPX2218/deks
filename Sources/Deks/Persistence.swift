@@ -3,7 +3,6 @@ import Foundation
 
 class Persistence {
     static let defaultPreferences = Preferences(
-        defaultNewWindowBehavior: .autoAssignToActive,
         idleTimeoutMinutes: 5,
         showLogoInMenuBar: false,
         developerDiagnosticsEnabled: false,
@@ -12,8 +11,11 @@ class Persistence {
 
     static var appSupportDir: URL {
         let fileManager = FileManager.default
-        let url = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Deks")
+        let base =
+            fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Application Support")
+        let url = base.appendingPathComponent("Deks")
         if !fileManager.fileExists(atPath: url.path) {
             try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         }

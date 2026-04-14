@@ -1,11 +1,43 @@
 import AppKit
 import ApplicationServices
 import CryptoKit
+import Darwin
 import Foundation
 
 extension Notification.Name {
     static let windowOperationTelemetryChanged = Notification.Name(
         "windowOperationTelemetryChanged")
+}
+
+// MARK: - Private AX ↔ CG bridge
+//
+// `_AXUIElementGetWindow` is an undocumented but widely used symbol (Yabai,
+// Amethyst, Rectangle all rely on it) that returns the CGWindowID for an
+// AXUIElement. We need it because the public `AXWindowNumber` attribute
+// uses a different number space than `kCGWindowNumber` from
+// CGWindowListCopyWindowInfo, so matching AX windows to the CG window
+// list without this function requires unreliable title/PID heuristics.
+//
+// Resolved via `@_silgen_name` so the linker binds to it directly at build
+// time. An earlier version of this file used `dlsym`, which silently failed
+// on every call (the macOS dlsym underscore-handling is subtle and our
+// lookup was returning nil 100% of the time, sending every z-order capture
+// through the title/PID fallback). `@_silgen_name` is how every other Swift
+// window manager bridges this symbol and is guaranteed-correct.
+
+@_silgen_name("_AXUIElementGetWindow")
+private func _AXUIElementGetWindow(
+    _ element: AXUIElement,
+    _ windowID: UnsafeMutablePointer<CGWindowID>
+) -> AXError
+
+/// Returns the CGWindowID for an AX element, or nil if the lookup fails.
+/// The returned value is stable for the lifetime of the window and matches
+/// `kCGWindowNumber` from CGWindowListCopyWindowInfo.
+func cgWindowIDForAXElement(_ element: AXUIElement) -> CGWindowID? {
+    var id: CGWindowID = 0
+    let err = _AXUIElementGetWindow(element, &id)
+    return err == .success ? id : nil
 }
 
 @MainActor
@@ -150,6 +182,10 @@ class WindowTracker {
         let appName: String
         let initialTitle: String
         let windowNumber: Int?
+        /// Stable CGWindowID bridged from the AX element via
+        /// `_AXUIElementGetWindow`. Used to produce reliable z-order matches
+        /// against `CGWindowListCopyWindowInfo` results.
+        let cgWindowID: CGWindowID?
 
         var currentTitle: String {
             var ref: CFTypeRef?
@@ -220,13 +256,15 @@ class WindowTracker {
                 // Filter out fake "ghost" accessibility elements (like Spotify's invisible background client workers)
                 // Real visible macOS windows always have measurable standard geometric screen dimensions
                 var sizeRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef)
-                    != .success
-                {
+                guard
+                    AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef)
+                        == .success,
+                    let sizeValue = sizeRef, CFGetTypeID(sizeValue) == AXValueGetTypeID()
+                else {
                     continue
                 }
                 var size = CGSize.zero
-                AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+                AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
                 if size.width <= 50 || size.height <= 50 { continue }
 
                 var matchedID: UUID?
@@ -295,14 +333,14 @@ class WindowTracker {
                     bundleID: bundleID,
                     appName: appName,
                     initialTitle: title,
-                    windowNumber: windowNumber
+                    windowNumber: windowNumber,
+                    cgWindowID: cgWindowIDForAXElement(window)
                 )
             }
         }
 
-        let deadKeys = sessionWindows.keys.filter { key in
-            let ax = sessionWindows[key]!.axElement
-            return !activeElements.contains(where: { CFEqual(ax, $0) })
+        let deadKeys = sessionWindows.compactMap { key, win in
+            activeElements.contains(where: { CFEqual(win.axElement, $0) }) ? nil : key
         }
         for k in deadKeys { sessionWindows.removeValue(forKey: k) }
     }
@@ -343,6 +381,27 @@ class WindowTracker {
         return success
     }
 
+    /// Raise a window to the top of its app's stacking order without
+    /// touching kAXMain/kAXFocused. Used by workspace restore to rebuild the
+    /// z-order back-to-front: calling this for every window in reverse order
+    /// produces a deterministic final stack regardless of unminimize animation
+    /// timing.
+    @discardableResult
+    func raiseSessionWindow(_ sessionWin: SessionWindow) -> Bool {
+        let status = AXUIElementPerformAction(
+            sessionWin.axElement,
+            kAXRaiseAction as CFString
+        )
+        let success = status == .success
+        if !success {
+            recordFailure(
+                operation: "raise",
+                detail: "\(sessionWin.bundleID) / \(sessionWin.currentTitle) [status=\(status.rawValue)]"
+            )
+        }
+        return success
+    }
+
     @discardableResult
     func focusAndRaiseSessionWindow(_ sessionWin: SessionWindow) -> Bool {
         let mainSet = setBoolAttribute(
@@ -373,12 +432,15 @@ class WindowTracker {
         }
         let appElement = AXUIElementCreateApplication(pid)
         var winRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &winRef)
-            == .success
-        {
-            let focusedWin = winRef as! AXUIElement
-            return sessionWindows.values.first(where: { CFEqual($0.axElement, focusedWin) })
+        guard
+            AXUIElementCopyAttributeValue(
+                appElement, kAXFocusedWindowAttribute as CFString, &winRef
+            ) == .success,
+            let value = winRef, CFGetTypeID(value) == AXUIElementGetTypeID()
+        else {
+            return nil
         }
-        return nil
+        let focusedWin = value as! AXUIElement
+        return sessionWindows.values.first(where: { CFEqual($0.axElement, focusedWin) })
     }
 }

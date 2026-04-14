@@ -162,27 +162,28 @@ Deks stores its config in `~/Library/Application Support/Deks/`:
 | File               | Contents                                          |
 | ------------------ | ------------------------------------------------- |
 | `workspaces.json`  | Workspace definitions, window assignments, colors |
-| `preferences.json` | Hotkeys, idle timeout, new window behavior        |
+| `preferences.json` | Hotkeys, idle timeout, menu bar preferences       |
 
-### New window behavior
-
-When a new window opens that isn't assigned to any workspace:
-
-| Mode                      | Behavior                                    |
-| ------------------------- | ------------------------------------------- |
-| **Auto-assign** (default) | Joins the currently active workspace        |
-| **Prompt**                | Notification asks which workspace to assign |
-| **Floating**              | Visible in all workspaces                   |
+When a new window opens that isn't assigned to any workspace, it joins the currently active workspace automatically.
 
 ### Hotkeys
 
-| Default     | Action                  |
-| ----------- | ----------------------- |
-| `⌃1` – `⌃9` | Switch to workspace 1–9 |
-| `⌥Tab`      | Open quick switcher     |
-| `⌃⇧N`       | Create new workspace    |
+| Default      | Action                                                   |
+| ------------ | -------------------------------------------------------- |
+| `⌃1` – `⌃9`  | Switch to workspace 1–9                                  |
+| `⌃⇧1` – `⌃⇧9`| Send the focused window to workspace 1–9 without switching |
+| `⌥Tab`       | Quick switcher — jump to previous workspace (flip-flop)  |
+| `⌥Tab` (hold)| Cycle forward through workspaces (tap Tab while holding) |
+| `⌥⇧Tab`      | Cycle backward through workspaces                        |
+| Release `⌥`  | Commit the selected workspace                            |
+| `⎋`          | Cancel the cycle without switching                       |
+| `⌃⇧N`        | Create new workspace                                     |
 
-All hotkeys are configurable in Settings.
+The quick switcher behaves like macOS `⌘Tab`: a quick `⌥Tab` and release jumps back to the previous workspace (great for flip-flopping between two). Hold `⌥` and keep tapping `Tab` to cycle forward, `⇧Tab` to go backward, `⎋` to cancel. Start typing any letter to fall back to the search-filter mode.
+
+Settings shows a live preview of every edit: drag a window from one workspace to another and the window hides or reappears on screen immediately so you can see what the workspace will look like.
+
+The per-workspace switch modifier is configurable in Settings.
 
 ## Building from source
 

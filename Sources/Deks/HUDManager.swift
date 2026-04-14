@@ -8,22 +8,21 @@ class HUDManager {
     private var window: NSWindow?
     private var fadeTimer: Timer?
 
-    func show(workspace: Workspace) {
-        fadeTimer?.invalidate()
-        window?.close()
+    // MARK: - Public entry points
 
+    func show(workspace: Workspace) {
         let dotSize: CGFloat = 40
-        let stackSpacing: CGFloat = 20
         let horizontalPadding: CGFloat = 28
         let verticalPadding: CGFloat = 24
+        let stackSpacing: CGFloat = 20
         let minPanelWidth: CGFloat = 220
         let minPanelHeight: CGFloat = 200
 
+        let labelFont = NSFont.systemFont(ofSize: 22, weight: .bold)
         let screenWidth = NSScreen.main?.visibleFrame.width ?? 1200
         let maxPanelWidth = min(420, screenWidth * 0.45)
         let maxLabelWidth = max(160, maxPanelWidth - (horizontalPadding * 2))
 
-        let labelFont = NSFont.systemFont(ofSize: 22, weight: .bold)
         let textRect = (workspace.name as NSString).boundingRect(
             with: NSSize(width: maxLabelWidth, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
@@ -32,45 +31,21 @@ class HUDManager {
         let measuredLabelWidth = ceil(min(maxLabelWidth, max(120, textRect.width)))
         let measuredLabelHeight = ceil(max(28, textRect.height))
 
-        let panelWidth = max(minPanelWidth, measuredLabelWidth + (horizontalPadding * 2))
-        let panelHeight = max(
-            minPanelHeight,
-            verticalPadding + dotSize + stackSpacing + measuredLabelHeight + verticalPadding
+        let panelSize = NSSize(
+            width: max(minPanelWidth, measuredLabelWidth + (horizontalPadding * 2)),
+            height: max(
+                minPanelHeight,
+                verticalPadding + dotSize + stackSpacing + measuredLabelHeight + verticalPadding
+            )
         )
-        let rect = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
-
-        let panel = NSPanel(
-            contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
-            defer: false)
-        panel.level = .floating
-        panel.isFloatingPanel = true
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = false
-        panel.center()
-
-        let visualEffect = NSVisualEffectView(frame: rect)
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.material = .hudWindow
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 24
-        visualEffect.layer?.masksToBounds = true
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 20
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        visualEffect.addSubview(stack)
 
         let dot = NSImageView()
         let image = NSImage(size: NSSize(width: dotSize, height: dotSize))
         image.lockFocus()
         workspace.color.nsColor.set()
-        let path = NSBezierPath(
-            ovalIn: NSRect(origin: .zero, size: NSSize(width: dotSize, height: dotSize)))
-        path.fill()
+        NSBezierPath(
+            ovalIn: NSRect(origin: .zero, size: NSSize(width: dotSize, height: dotSize))
+        ).fill()
         image.unlockFocus()
         dot.image = image
 
@@ -78,67 +53,77 @@ class HUDManager {
         label.font = labelFont
         label.textColor = .white
         label.alignment = .center
-        label.isEditable = false
-        label.isBordered = false
-        label.drawsBackground = false
         label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = 0
         label.cell?.wraps = true
         label.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.addArrangedSubview(dot)
-        stack.addArrangedSubview(label)
-
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: visualEffect.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: visualEffect.centerYAnchor),
-            label.widthAnchor.constraint(lessThanOrEqualToConstant: maxLabelWidth),
-        ])
-
-        panel.contentView = visualEffect
-        panel.alphaValue = 0.0
-        panel.orderFront(nil)
-
-        self.window = panel
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
-            panel.animator().alphaValue = 1.0
-        }
-
-        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self, let w = self.window else { return }
-                NSAnimationContext.runAnimationGroup(
-                    { context in
-                        context.duration = 0.3
-                        w.animator().alphaValue = 0.0
-                    },
-                    completionHandler: {
-                        Task { @MainActor [weak self, weak w] in
-                            guard let self, let w else { return }
-                            w.close()
-                            if self.window === w { self.window = nil }
-                        }
-                    })
+        presentHUD(
+            panelSize: panelSize,
+            cornerRadius: 24,
+            stackSpacing: stackSpacing,
+            duration: 1.0,
+            content: [dot, label],
+            extraConstraints: { _ in
+                [label.widthAnchor.constraint(lessThanOrEqualToConstant: maxLabelWidth)]
             }
-        }
+        )
     }
 
     func showToggleFeedback(enabled: Bool) {
+        let panelSize = NSSize(width: 240, height: 120)
+
+        let icon = NSImageView()
+        if let image = NSImage(
+            systemSymbolName: enabled ? "checkmark.circle.fill" : "xmark.circle.fill",
+            accessibilityDescription: nil
+        ) {
+            icon.image = image
+        }
+        icon.contentTintColor = enabled ? .systemGreen : .systemRed
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(labelWithString: enabled ? "Deks Enabled" : "Deks Disabled")
+        label.font = .systemFont(ofSize: 18, weight: .semibold)
+        label.textColor = .white
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        presentHUD(
+            panelSize: panelSize,
+            cornerRadius: 16,
+            stackSpacing: 12,
+            duration: 1.5,
+            content: [icon, label],
+            extraConstraints: { _ in
+                [
+                    icon.widthAnchor.constraint(equalToConstant: 32),
+                    icon.heightAnchor.constraint(equalToConstant: 32),
+                ]
+            }
+        )
+    }
+
+    // MARK: - Shared presentation
+
+    private func presentHUD(
+        panelSize: NSSize,
+        cornerRadius: CGFloat,
+        stackSpacing: CGFloat,
+        duration: TimeInterval,
+        content: [NSView],
+        extraConstraints: (NSStackView) -> [NSLayoutConstraint] = { _ in [] }
+    ) {
         fadeTimer?.invalidate()
         window?.close()
 
-        let statusText = enabled ? "Deks Enabled" : "Deks Disabled"
-        let iconName = enabled ? "checkmark.circle.fill" : "xmark.circle.fill"
-
-        let panelWidth: CGFloat = 240
-        let panelHeight: CGFloat = 120
-        let rect = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
-
+        let rect = NSRect(origin: .zero, size: panelSize)
         let panel = NSPanel(
-            contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
-            defer: false)
+            contentRect: rect,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.backgroundColor = .clear
@@ -151,40 +136,26 @@ class HUDManager {
         visualEffect.state = .active
         visualEffect.material = .hudWindow
         visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 16
+        visualEffect.layer?.cornerRadius = cornerRadius
         visualEffect.layer?.masksToBounds = true
 
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 12
+        stack.spacing = stackSpacing
         stack.translatesAutoresizingMaskIntoConstraints = false
         visualEffect.addSubview(stack)
 
-        let label = NSTextField(labelWithString: statusText)
-        label.font = NSFont.systemFont(ofSize: 18, weight: .semibold)
-        label.textColor = .white
-        label.alignment = .center
-
-        let icon = NSImageView()
-        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
-            icon.image = image
-            icon.contentTintColor = enabled ? .systemGreen : .systemRed
-            icon.translatesAutoresizingMaskIntoConstraints = false
-            stack.addArrangedSubview(icon)
-            NSLayoutConstraint.activate([
-                icon.widthAnchor.constraint(equalToConstant: 32),
-                icon.heightAnchor.constraint(equalToConstant: 32),
-            ])
+        for view in content {
+            stack.addArrangedSubview(view)
         }
 
-        label.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(label)
-
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: visualEffect.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: visualEffect.centerYAnchor),
-        ])
+        NSLayoutConstraint.activate(
+            [
+                stack.centerXAnchor.constraint(equalTo: visualEffect.centerXAnchor),
+                stack.centerYAnchor.constraint(equalTo: visualEffect.centerYAnchor),
+            ] + extraConstraints(stack)
+        )
 
         panel.contentView = visualEffect
         panel.alphaValue = 0.0
@@ -197,22 +168,28 @@ class HUDManager {
             panel.animator().alphaValue = 1.0
         }
 
-        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) {
+            [weak self] _ in
             Task { @MainActor in
-                guard let self = self, let w = self.window else { return }
-                NSAnimationContext.runAnimationGroup(
-                    { context in
-                        context.duration = 0.3
-                        w.animator().alphaValue = 0.0
-                    },
-                    completionHandler: {
-                        Task { @MainActor [weak self, weak w] in
-                            guard let self, let w else { return }
-                            w.close()
-                            if self.window === w { self.window = nil }
-                        }
-                    })
+                self?.fadeOutCurrent()
             }
         }
+    }
+
+    private func fadeOutCurrent() {
+        guard let w = window else { return }
+        NSAnimationContext.runAnimationGroup(
+            { context in
+                context.duration = 0.3
+                w.animator().alphaValue = 0.0
+            },
+            completionHandler: {
+                Task { @MainActor [weak self, weak w] in
+                    guard let self, let w else { return }
+                    w.close()
+                    if self.window === w { self.window = nil }
+                }
+            }
+        )
     }
 }

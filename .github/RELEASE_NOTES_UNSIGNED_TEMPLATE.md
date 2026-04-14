@@ -1,10 +1,10 @@
-# Deks v0.1.0
+# Deks v0.2.0
 
 Deks is a fast macOS workspace manager that switches complete window-level contexts instantly.
 
 ## Downloads
 
-- Deks-v0.1.0.zip (unsigned)
+- Deks-v0.2.0.zip (unsigned)
 
 ## Important: Unsigned Build
 
@@ -33,19 +33,25 @@ Deks needs Accessibility permission to manage windows:
 - Enable Deks
 - After enabling permission, open the Deks popup/settings and reorganize windows into the intended workspaces once.
 
-## What's New in v0.1.0
+## What's New in v0.2.0
+
+- ⌘Tab-style hold-to-cycle Quick Switcher: ⌥Tab cycles forward, ⌥⇧Tab cycles backward, release ⌥ commits, Esc cancels. Opening forward pre-selects the previous workspace for flip-flop jumps.
+- Send the focused window to workspace N via ⌃⇧1–⌃⇧9.
+- Settings drag-and-drop now live-previews window visibility on screen as you rearrange assignments.
+- Z-order preservation across workspace switches is now far more reliable thanks to a CG window ID bridge and cross-app back-to-front restore.
+- Install script resets Accessibility TCC permission by default on ad-hoc signed builds so every reinstall gets a fresh prompt.
+- Test suite expanded from 3 to 79 tests.
+
+Carried over from v0.1.0:
 
 - Window-level workspace management (not just apps — individual windows)
 - Instant hotkey switching (Ctrl+1 through Ctrl+9)
 - Menu bar widget with search and workspace dropdown
-- Quick switcher overlay (Opt+Tab)
 - Idle optimization freezes background workspaces to save RAM
 - Named and colored workspaces
 - Floating (pinned) windows across all workspaces
 - Native HUD overlay on workspace switch
-- Drag-and-drop window organization in settings
 - Launch on login support
-- Reset all data button for fresh start
 - Fully local — no analytics, no network requests
 
 ## Known Limitations

@@ -1,6 +1,21 @@
 import AppKit
 import Foundation
 
+/// Pure cycle math used by the quick switcher hold-session. Kept at file scope
+/// (and outside any MainActor isolation) so it can be unit tested without
+/// spinning up AppKit.
+enum QuickSwitcherCycle {
+    /// Returns the next selected row index when cycling forward or backward
+    /// through a list of `count` workspaces. A negative `current` is treated
+    /// as 0 (no selection yet). An empty list returns 0.
+    static func nextIndex(current: Int, count: Int, forward: Bool) -> Int {
+        guard count > 0 else { return 0 }
+        let base = max(0, current)
+        let step = forward ? 1 : -1
+        return ((base + step) % count + count) % count
+    }
+}
+
 @MainActor
 class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource,
     NSTableViewDelegate
@@ -10,9 +25,21 @@ class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSou
     private let searchField = NSTextField()
     private let resultsTable = NSTableView()
     private let scrollView = NSScrollView()
+    private let hintLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(labelWithString: "")
 
     private var allWorkspaces: [Workspace] = []
     private var filteredWorkspaces: [Workspace] = []
+
+    private var isHoldSession: Bool = false
+    private var keyEventMonitor: Any?
+    private var flagsEventMonitor: Any?
+
+    private static let holdTitle = "Hold ⌥  •  Tab to cycle"
+    private static let typingTitle = "Switch Workspace"
+    private static let holdHintText =
+        "Tab cycle   ⇧Tab back   Release ⌥ to switch   ⎋ Cancel"
+    private static let typingHintText = "↑↓ Navigate   ⏎ Switch   ⎋ Close"
 
     init() {
         let panel = NSPanel(
@@ -44,7 +71,7 @@ class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSou
         panel.contentView = visualEffect
 
         // Title
-        let titleLabel = NSTextField(labelWithString: "Switch Workspace")
+        titleLabel.stringValue = Self.typingTitle
         titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         titleLabel.textColor = NSColor.white.withAlphaComponent(0.5)
         titleLabel.alignment = .center
@@ -89,7 +116,7 @@ class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSou
         visualEffect.addSubview(scrollView)
 
         // Hint bar
-        let hintLabel = NSTextField(labelWithString: "↑↓ Navigate  ⏎ Switch  ⎋ Close")
+        hintLabel.stringValue = Self.typingHintText
         hintLabel.font = .systemFont(ofSize: 10, weight: .medium)
         hintLabel.textColor = NSColor.white.withAlphaComponent(0.35)
         hintLabel.alignment = .center
@@ -119,13 +146,30 @@ class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSou
         ])
     }
 
-    func show() {
+    /// Entry point for the ⌥Tab / ⌥⇧Tab hotkey. If the switcher is already
+    /// visible in a hold session, cycle the current selection. Otherwise
+    /// open it in hold mode and pre-advance one step from the active
+    /// workspace so a single ⌥Tab moves to the next workspace on release.
+    func activateHold(forward: Bool) {
+        if window?.isVisible == true && isHoldSession {
+            cycleSelection(forward: forward)
+            return
+        }
+        show(holdSession: true, initialForward: forward)
+    }
+
+    func show(holdSession: Bool = false, initialForward: Bool = true) {
         allWorkspaces = WorkspaceManager.shared.workspaces
         filteredWorkspaces = allWorkspaces
         resultsTable.reloadData()
         searchField.stringValue = ""
 
-        // Pre-select the active workspace
+        isHoldSession = holdSession
+        hintLabel.stringValue = holdSession ? Self.holdHintText : Self.typingHintText
+        titleLabel.stringValue = holdSession ? Self.holdTitle : Self.typingTitle
+
+        // Pre-select the active workspace, then advance one step in hold mode
+        // so the first ⌥Tab already points at the "next" workspace.
         if let activeId = WorkspaceManager.shared.activeWorkspaceId,
             let idx = filteredWorkspaces.firstIndex(where: { $0.id == activeId })
         {
@@ -147,7 +191,32 @@ class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSou
         self.window?.alphaValue = 0
         self.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        self.window?.makeFirstResponder(searchField)
+
+        if holdSession {
+            // Don't focus the search field yet: keep Tab/Escape/Option events
+            // flowing through our local monitors. Typing any printable key
+            // transitions to typing mode.
+            self.window?.makeFirstResponder(nil)
+            installHoldSessionMonitors()
+
+            // macOS ⌘Tab-style: on forward-open, pre-select the *previous*
+            // workspace (if any), so a quick tap-and-release flip-flops back
+            // to the last workspace. Additional Tab taps cycle forward from
+            // there. Backward-open keeps the plain "one step back" behavior.
+            if initialForward,
+                let prevId = WorkspaceManager.shared.previousWorkspaceId,
+                let idx = filteredWorkspaces.firstIndex(where: { $0.id == prevId })
+            {
+                resultsTable.selectRowIndexes(
+                    IndexSet(integer: idx), byExtendingSelection: false
+                )
+                resultsTable.scrollRowToVisible(idx)
+            } else {
+                cycleSelection(forward: initialForward)
+            }
+        } else {
+            self.window?.makeFirstResponder(searchField)
+        }
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
@@ -156,6 +225,8 @@ class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSou
     }
 
     func hide() {
+        isHoldSession = false
+        removeHoldSessionMonitors()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.1
             self.window?.animator().alphaValue = 0.0
@@ -164,6 +235,80 @@ class QuickSwitcher: NSWindowController, NSTextFieldDelegate, NSTableViewDataSou
                 self?.window?.orderOut(nil)
             }
         })
+    }
+
+    // MARK: - Hold session (⌥Tab cycle)
+
+    private func cycleSelection(forward: Bool) {
+        guard !filteredWorkspaces.isEmpty else { return }
+        let next = QuickSwitcherCycle.nextIndex(
+            current: resultsTable.selectedRow,
+            count: filteredWorkspaces.count,
+            forward: forward
+        )
+        resultsTable.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+        resultsTable.scrollRowToVisible(next)
+    }
+
+    private func installHoldSessionMonitors() {
+        removeHoldSessionMonitors()
+
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            guard let self, self.isHoldSession else { return event }
+
+            // Escape cancels without switching.
+            if event.keyCode == 53 {
+                Task { @MainActor in self.hide() }
+                return nil
+            }
+
+            // Any printable character transitions to typing/filter mode so
+            // users can still search by name if they want to.
+            if let chars = event.charactersIgnoringModifiers, let first = chars.unicodeScalars.first,
+                CharacterSet.alphanumerics.contains(first)
+            {
+                Task { @MainActor in self.enterTypingMode() }
+                return event
+            }
+            return event
+        }
+
+        flagsEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            guard let self, self.isHoldSession else { return event }
+            if !event.modifierFlags.contains(.option) {
+                Task { @MainActor in self.commitHoldSelection() }
+            }
+            return event
+        }
+    }
+
+    private func removeHoldSessionMonitors() {
+        if let m = keyEventMonitor {
+            NSEvent.removeMonitor(m)
+            keyEventMonitor = nil
+        }
+        if let m = flagsEventMonitor {
+            NSEvent.removeMonitor(m)
+            flagsEventMonitor = nil
+        }
+    }
+
+    private func commitHoldSelection() {
+        guard isHoldSession else { return }
+        isHoldSession = false
+        removeHoldSessionMonitors()
+        switchToSelected()
+    }
+
+    private func enterTypingMode() {
+        guard isHoldSession else { return }
+        isHoldSession = false
+        removeHoldSessionMonitors()
+        hintLabel.stringValue = Self.typingHintText
+        titleLabel.stringValue = Self.typingTitle
+        self.window?.makeFirstResponder(searchField)
     }
 
     func controlTextDidChange(_ obj: Notification) {

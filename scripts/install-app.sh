@@ -10,8 +10,22 @@ BACKUP_ROOT="$HOME/Library/Application Support/Deks/Backups"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DEST="$BACKUP_ROOT/$APP_NAME-$TIMESTAMP.app"
 SKIP_BUILD="${DEKS_SKIP_BUILD:-0}"
-RESET_ACCESSIBILITY="${DEKS_RESET_ACCESSIBILITY:-0}"
 RESET_SCOPE="${DEKS_RESET_SCOPE:-bundle}"
+
+# Default TCC reset policy:
+# - Ad-hoc signed (no DEKS_SIGN_IDENTITY): reset every install so the next
+#   launch prompts once for Accessibility and the grant actually sticks.
+#   Without this, reinstalls leave TCC thinking permission is granted while
+#   the AX API silently fails because the signature hash changed.
+# - Stable signing identity: skip the reset so permission carries across
+#   rebuilds.
+# Override with DEKS_RESET_ACCESSIBILITY=0 or =1 to force a decision.
+if [ -n "${DEKS_SIGN_IDENTITY:-}" ] && [ "${DEKS_SIGN_IDENTITY}" != "-" ]; then
+	RESET_ACCESSIBILITY_DEFAULT="0"
+else
+	RESET_ACCESSIBILITY_DEFAULT="1"
+fi
+RESET_ACCESSIBILITY="${DEKS_RESET_ACCESSIBILITY:-$RESET_ACCESSIBILITY_DEFAULT}"
 
 restore_backup_on_error() {
 	if [ -d "$BACKUP_DEST" ]; then
@@ -61,19 +75,23 @@ trap - ERR
 cat <<'EOF'
 
 Install complete.
-If Accessibility appears off, open:
-System Settings > Privacy & Security > Accessibility
-Then toggle Deks on and click "Check Again" in the Deks setup window.
+Ad-hoc builds reset Accessibility permission on every install by default,
+so the Deks setup window should ask you to grant it once. Click through to
+System Settings > Privacy & Security > Accessibility, toggle Deks on, then
+click "Check Again" in the Deks setup window.
 
-Tip: for best permission persistence, sign builds with a stable identity:
+Tip: preserve permission across rebuilds by signing with a stable identity
+(this automatically skips the TCC reset step):
 DEKS_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/install-app.sh
 
-Tip: if you only want to reinstall without changing the binary/signature hash:
+Tip: force-keep the existing permission on this install (no TCC reset):
+DEKS_RESET_ACCESSIBILITY=0 ./scripts/install-app.sh
+
+Tip: reinstall without rebuilding (also skips the TCC reset unless the
+signature changed):
 DEKS_SKIP_BUILD=1 ./scripts/install-app.sh
 
-Tip: one-command permission recovery + reinstall:
-DEKS_RESET_ACCESSIBILITY=1 ./scripts/install-app.sh
-
-Tip: if permission DB is really stuck, use global reset (resets all apps):
+Tip: if the permission DB is really stuck, use a global reset
+(resets Accessibility for all apps, not just Deks):
 DEKS_RESET_ACCESSIBILITY=1 DEKS_RESET_SCOPE=global ./scripts/install-app.sh
 EOF
