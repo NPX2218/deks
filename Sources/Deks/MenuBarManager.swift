@@ -8,13 +8,18 @@ class MenuBarManager: NSObject {
     static let shared = MenuBarManager()
     private let maxMenuBarTitleCharacters = 18
     private let maxWorkspaceSubtitleApps = 3
-    fileprivate let maxFolderButtonsShown = 4
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var escapeKeyMonitor: Any?
     private var globalEscapeKeyMonitor: Any?
     private var globalMouseDownMonitor: Any?
+    /// The time the popover was last shown. Used to ignore the click that
+    /// opened the popover — without this, the global mouse-down monitor fires
+    /// for that same click and immediately closes the popover. 300ms is enough
+    /// to cover event-queue processing after `popover.show`.
+    private var popoverShownAt: Date?
+    private let popoverOpenGraceInterval: TimeInterval = 0.3
 
     private func menuBarLogoImage() -> NSImage? {
         // Prefer the bundled icns asset directly to avoid generic system fallback icons.
@@ -54,8 +59,13 @@ class MenuBarManager: NSObject {
             button.target = self
         }
 
-        popover.behavior = .transient
-        // Wide view like the spec
+        // .applicationDefined so NSPopover never auto-dismisses on its own. We
+        // manage dismissal explicitly via the escape monitor, the global-mouse
+        // outside-click monitor, and explicit action handlers. .transient caused
+        // the popover to close whenever a child NSMenu (e.g. the "Move window
+        // to…" popup) displayed, because AppKit treats the menu window as an
+        // outside interaction.
+        popover.behavior = .applicationDefined
         popover.contentViewController = MenuBarViewController()
 
         if escapeKeyMonitor == nil {
@@ -82,12 +92,21 @@ class MenuBarManager: NSObject {
             }
         }
 
-        // Fallback: close popover when user clicks outside Deks and focus callbacks are delayed.
+        // Close popover when user clicks outside Deks. Required because the
+        // popover uses .applicationDefined behavior (see setup). We gate on a
+        // short "just-opened" grace period so the click that triggered the
+        // status-item button action — which is still queued in the event loop
+        // when this monitor fires — doesn't immediately close what it opened.
         if globalMouseDownMonitor == nil {
             globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.leftMouseDown, .rightMouseDown]
             ) { [weak self] _ in
                 guard let self, self.popover.isShown else { return }
+                if let shownAt = self.popoverShownAt,
+                    Date().timeIntervalSince(shownAt) < self.popoverOpenGraceInterval
+                {
+                    return
+                }
                 Task { @MainActor in
                     self.closePopover()
                 }
@@ -193,36 +212,62 @@ class MenuBarManager: NSObject {
 
         let remainingGroups = sorted.count - visible.count
         if remainingGroups > 0 {
-            return "\(visible.joined(separator: ", ")) +\(remainingGroups) folders"
+            return "\(visible.joined(separator: ", ")) +\(remainingGroups) more"
         }
         return visible.joined(separator: ", ")
     }
 
     @objc private func togglePopover(_ sender: Any?) {
         if popover.isShown {
-            popover.performClose(sender)
+            closePopover()
         } else {
             if let button = statusItem.button {
+                // Capture the frontmost window BEFORE activating Deks. After
+                // activate, the frontmost app is Deks and the real target is
+                // lost.
+                let lastFocused = WindowTracker.shared.getFrontmostSessionWindow()
                 NSApp.activate(ignoringOtherApps: true)
                 if let vc = popover.contentViewController as? MenuBarViewController {
+                    vc.capturedLastFocused = lastFocused
                     vc.reload()
                 }
+                popoverShownAt = Date()
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                // Ensure controls render in active state and keyboard events reach the popover.
+                button.highlight(true)
                 DispatchQueue.main.async { [weak self] in
                     self?.popover.contentViewController?.view.window?.makeKey()
                 }
             }
         }
     }
+
     func closePopover() {
         if popover.isShown {
             popover.performClose(nil)
         }
+        statusItem?.button?.highlight(false)
+        popoverShownAt = nil
+    }
+
+    /// Close the popover synchronously (no animation), so there's no window
+    /// still animating out when the caller opens another window right after.
+    /// Used before transitioning to the Settings window — `performClose`'s
+    /// animation would otherwise still be in flight when the settings
+    /// window becomes key, which caused the "need to click Settings twice"
+    /// bug.
+    func closePopoverImmediately() {
+        if popover.isShown {
+            popover.close()
+        }
+        statusItem?.button?.highlight(false)
+        popoverShownAt = nil
     }
 
     @objc private func handleAppDidResignActive() {
-        closePopover()
+        // Intentionally a no-op. didResignActive also fires when a child NSMenu
+        // (NSPopUpButton dropdown) takes focus — closing here would tear down the
+        // popover mid-interaction. Outside-click dismissal is handled by the
+        // global mouse-down monitor and escape-key monitor instead.
     }
 
     @objc private func handleAppWillTerminate() {
@@ -239,47 +284,81 @@ class MenuBarManager: NSObject {
     }
 }
 
-// Custom View Controller to match the requested wide design
+// MARK: - Visual style constants
+
+enum PopoverStyle {
+    // Layout
+    static let popoverWidth: CGFloat = 340
+    static let hPadding: CGFloat = 14
+    static let vPadding: CGFloat = 14
+    static let rowCornerRadius: CGFloat = 8
+    static let footerIconIndent: CGFloat = 10
+
+    // Opacity tiers — one source of truth so every surface feels consistent.
+    static let subtleFill: CGFloat = 0.06      // chips, shortcut badges, quiet surfaces
+    static let hoverFill: CGFloat = 0.09       // hover state for non-active rows / footer
+    static let activeFill: CGFloat = 0.18      // selected workspace background
+    static let activeHoverFill: CGFloat = 0.26 // selected workspace hover
+}
+
+// MARK: - Popover View Controller
+
 class MenuBarViewController: NSViewController {
-    private struct AppFolderPayload {
-        let workspaceId: UUID
-        let appName: String
-        let bundleIDs: Set<String>
-    }
+    private static let popoverWidth = PopoverStyle.popoverWidth
+    private static let hPadding = PopoverStyle.hPadding
+    private static let vPadding = PopoverStyle.vPadding
 
     private let stackView = NSStackView()
     private let searchField = NSSearchField()
     private var searchQuery = ""
     private var searchDebounceWorkItem: DispatchWorkItem?
     private var appNameCache: [String: String] = [:]
+    private var appIconCache: [String: NSImage] = [:]
     private var lastRenderSignature = ""
 
+    /// Window that was frontmost BEFORE the popover was opened. Cached at
+    /// open-time because by the time the popover renders, `NSApp.activate`
+    /// has already made Deks itself frontmost — `getFrontmostSessionWindow()`
+    /// would otherwise resolve to Deks (and get filtered out).
+    var capturedLastFocused: WindowTracker.SessionWindow?
+
     override func loadView() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 50))  // Arbitrary start
-        searchField.placeholderString = "Search workspaces/apps/windows"
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        searchField.placeholderString = "Search workspaces, apps, windows"
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
         searchField.sendsSearchStringImmediately = true
+        searchField.font = .systemFont(ofSize: 12)
         searchField.translatesAutoresizingMaskIntoConstraints = false
 
         stackView.orientation = .vertical
         stackView.alignment = .leading
-        stackView.spacing = 6
+        stackView.spacing = 4
+        stackView.translatesAutoresizingMaskIntoConstraints = false
 
         container.addSubview(searchField)
-        stackView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stackView)
 
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            searchField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            searchField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            container.widthAnchor.constraint(equalToConstant: Self.popoverWidth),
 
-            stackView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
-            stackView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
-            stackView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-            stackView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
-            stackView.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            searchField.topAnchor.constraint(
+                equalTo: container.topAnchor, constant: Self.vPadding),
+            searchField.leadingAnchor.constraint(
+                equalTo: container.leadingAnchor, constant: Self.hPadding),
+            searchField.trailingAnchor.constraint(
+                equalTo: container.trailingAnchor, constant: -Self.hPadding),
+
+            stackView.topAnchor.constraint(
+                equalTo: searchField.bottomAnchor, constant: 12),
+            stackView.leadingAnchor.constraint(
+                equalTo: container.leadingAnchor, constant: Self.hPadding),
+            stackView.trailingAnchor.constraint(
+                equalTo: container.trailingAnchor, constant: -Self.hPadding),
+            stackView.bottomAnchor.constraint(
+                equalTo: container.bottomAnchor, constant: -Self.vPadding),
         ])
 
         self.view = container
@@ -299,6 +378,24 @@ class MenuBarViewController: NSViewController {
 
     private func normalized(_ text: String) -> String {
         text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func appIcon(for bundleID: String) -> NSImage? {
+        if let cached = appIconCache[bundleID] {
+            return cached
+        }
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            appIconCache[bundleID] = icon
+            return icon
+        }
+        if let running = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleID
+        })?.icon {
+            appIconCache[bundleID] = running
+            return running
+        }
+        return nil
     }
 
     private func appDisplayName(for bundleID: String) -> String {
@@ -327,6 +424,30 @@ class MenuBarViewController: NSViewController {
         return resolved
     }
 
+    // MARK: Row helpers
+
+    private func addRow(_ view: NSView, spacingAfter: CGFloat? = nil) {
+        stackView.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
+        if let spacing = spacingAfter {
+            stackView.setCustomSpacing(spacing, after: view)
+        }
+    }
+
+    private func addSectionHeader(_ title: String, spacingAfter: CGFloat = 4) {
+        let label = NSTextField(labelWithString: title.uppercased())
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = .tertiaryLabelColor
+        addRow(label, spacingAfter: spacingAfter)
+    }
+
+    private func addSectionGap(_ amount: CGFloat) {
+        guard let last = stackView.arrangedSubviews.last else { return }
+        stackView.setCustomSpacing(amount, after: last)
+    }
+
+    // MARK: Render
+
     func reload() {
         let signature = buildRenderSignature()
         if signature == lastRenderSignature {
@@ -334,55 +455,109 @@ class MenuBarViewController: NSViewController {
         }
         lastRenderSignature = signature
 
-        // Clear old
         stackView.views.forEach { $0.removeFromSuperview() }
         if searchField.stringValue != searchQuery {
             searchField.stringValue = searchQuery
         }
         let query = normalized(searchQuery)
 
-        let focused = WindowTracker.shared.getFrontmostSessionWindow()
-        let activeName: String
-        if let focused, focused.appName != "Deks" {
-            activeName = focused.appName
+        renderCurrentWindowSection()
+        addSectionGap(18)
+        renderWorkspaceList(query: query)
+        addSectionGap(16)
+        renderFooter()
+
+        view.layoutSubtreeIfNeeded()
+        preferredContentSize = NSSize(
+            width: Self.popoverWidth, height: view.fittingSize.height)
+    }
+
+    private func renderCurrentWindowSection() {
+        let focused: WindowTracker.SessionWindow? = {
+            guard let captured = capturedLastFocused, captured.appName != "Deks" else {
+                return nil
+            }
+            return captured
+        }()
+        let hasFocus = focused != nil
+        let activeName = hasFocus ? (focused?.appName ?? "") : "No active window"
+
+        addSectionHeader("Last Focused")
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.distribution = .fill
+
+        let iconView = NSImageView()
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        iconView.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        if hasFocus, let bundleID = focused?.bundleID, let icon = appIcon(for: bundleID) {
+            iconView.image = icon
         } else {
-            activeName = "No active window"
+            iconView.image = NSImage(
+                systemSymbolName: "app.dashed", accessibilityDescription: nil)
+            iconView.symbolConfiguration = NSImage.SymbolConfiguration(
+                pointSize: 14, weight: .regular)
+            iconView.contentTintColor = .tertiaryLabelColor
+        }
+        row.addArrangedSubview(iconView)
+
+        let label = NSTextField(labelWithString: activeName)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.textColor = hasFocus ? .labelColor : .tertiaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(label)
+
+        if hasFocus, let focused = focused {
+            let isPinned = WorkspaceManager.shared.isWindowPinned(focused.id)
+            let pinBtn = makeIconButton(
+                symbol: isPinned ? "pin.slash.fill" : "pin.fill",
+                tint: isPinned ? .systemOrange : .secondaryLabelColor,
+                tooltip: isPinned ? "Unpin window" : "Pin window",
+                action: #selector(togglePinFocusedWindow)
+            )
+            row.addArrangedSubview(pinBtn)
+
+            let quitBtn = makeIconButton(
+                symbol: "xmark.circle.fill",
+                tint: .secondaryLabelColor,
+                tooltip: "Quit app",
+                action: #selector(quitFocusedApp)
+            )
+            row.addArrangedSubview(quitBtn)
         }
 
-        // Active window context
-        let activeRow = NSStackView()
-        activeRow.orientation = .horizontal
-        activeRow.spacing = 6
-        activeRow.alignment = .centerY
-        let activeDot = NSTextField(labelWithString: "●")
-        activeDot.font = .systemFont(ofSize: 8)
-        activeDot.textColor = .systemGreen
-        let activeLabel = NSTextField(labelWithString: activeName)
-        activeLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        activeLabel.textColor = .secondaryLabelColor
-        activeLabel.lineBreakMode = .byTruncatingTail
-        activeRow.addArrangedSubview(activeDot)
-        activeRow.addArrangedSubview(activeLabel)
-        stackView.addArrangedSubview(activeRow)
+        addRow(row, spacingAfter: 8)
 
-        // Only show telemetry details when developer diagnostics are enabled
+        // Telemetry warnings
         let showDiagnostics = Persistence.loadPreferences().developerDiagnosticsEnabled
         let telemetry = WindowTracker.shared.operationTelemetry
 
         if showDiagnostics {
             let telemetryText: String
             if telemetry.totalFailures == 0 {
-                telemetryText = "Window Ops: healthy"
+                telemetryText = "Window ops: healthy"
             } else {
                 telemetryText =
-                    "Window Ops: \(telemetry.totalFailures) failures (hide \(telemetry.hideFailures), show \(telemetry.showFailures), focus \(telemetry.focusFailures))"
+                    "Window ops: \(telemetry.totalFailures) failures (hide \(telemetry.hideFailures), show \(telemetry.showFailures), focus \(telemetry.focusFailures))"
             }
             let telemetryLabel = NSTextField(labelWithString: telemetryText)
             telemetryLabel.font = .systemFont(ofSize: 10, weight: .medium)
-            telemetryLabel.textColor = telemetry.totalFailures == 0 ? .systemGreen : .systemRed
-            stackView.addArrangedSubview(telemetryLabel)
+            telemetryLabel.textColor =
+                telemetry.totalFailures == 0 ? .systemGreen : .systemRed
+            telemetryLabel.lineBreakMode = .byTruncatingTail
+            addRow(telemetryLabel, spacingAfter: 6)
 
-            if let lastFailureAt = telemetry.lastFailureAt, let detail = telemetry.lastFailureDetail,
+            if let lastFailureAt = telemetry.lastFailureAt,
+                let detail = telemetry.lastFailureDetail,
                 telemetry.totalFailures > 0
             {
                 let formatter = RelativeDateTimeFormatter()
@@ -393,89 +568,57 @@ class MenuBarViewController: NSViewController {
                 detailLabel.textColor = .tertiaryLabelColor
                 detailLabel.maximumNumberOfLines = 2
                 detailLabel.lineBreakMode = .byTruncatingTail
-                stackView.addArrangedSubview(detailLabel)
+                addRow(detailLabel, spacingAfter: 8)
             }
         } else if telemetry.totalFailures > 0 {
-            // Show a subtle warning even for regular users when things are broken
-            let warningLabel = NSTextField(
-                labelWithString: "\(telemetry.totalFailures) window operation issue\(telemetry.totalFailures == 1 ? "" : "s")")
-            warningLabel.font = .systemFont(ofSize: 10, weight: .medium)
-            warningLabel.textColor = .systemOrange
-            stackView.addArrangedSubview(warningLabel)
+            let warning = NSTextField(
+                labelWithString:
+                    "\(telemetry.totalFailures) window issue\(telemetry.totalFailures == 1 ? "" : "s")"
+            )
+            warning.font = .systemFont(ofSize: 11, weight: .medium)
+            warning.textColor = .systemOrange
+            addRow(warning, spacingAfter: 8)
         }
 
-        let quickAssignPopup = NSPopUpButton()
-        quickAssignPopup.target = self
-        quickAssignPopup.action = #selector(quickAssignChanged(_:))
-
-        quickAssignPopup.addItem(withTitle: "Move window to...")
-        quickAssignPopup.lastItem?.representedObject = nil
-
+        // Move-to-workspace popup
+        let popup = NSPopUpButton()
+        popup.target = self
+        popup.action = #selector(quickAssignChanged(_:))
+        popup.font = .systemFont(ofSize: 12)
+        popup.addItem(withTitle: "Move window to…")
+        popup.lastItem?.representedObject = nil
         for ws in WorkspaceManager.shared.workspaces {
-            quickAssignPopup.addItem(withTitle: ws.name)
-            quickAssignPopup.lastItem?.representedObject = ws.id
+            popup.addItem(withTitle: ws.name)
+            popup.lastItem?.representedObject = ws.id
         }
-
-        quickAssignPopup.isEnabled = (focused?.appName).map { $0 != "Deks" } ?? false
+        popup.isEnabled = hasFocus
 
         if let focused = focused {
-            // Set current assignment
             for ws in WorkspaceManager.shared.workspaces {
                 if ws.assignedWindows.contains(where: { $0.id == focused.id }) {
-                    quickAssignPopup.selectItem(withTitle: ws.name)
+                    popup.selectItem(withTitle: ws.name)
                     break
                 }
             }
         }
+        addRow(popup)
+    }
 
-        stackView.addArrangedSubview(quickAssignPopup)
-
-        if let focused = focused, focused.appName != "Deks" {
-            let actionRow = NSStackView()
-            actionRow.orientation = .horizontal
-            actionRow.spacing = 12
-            actionRow.alignment = .centerY
-
-            let isPinned = WorkspaceManager.shared.isWindowPinned(focused.id)
-            let pinTitle = isPinned ? "Unpin" : "Pin"
-            let pinBtn = NSButton(
-                title: pinTitle, target: self, action: #selector(togglePinFocusedWindow))
-            pinBtn.isBordered = false
-            pinBtn.contentTintColor = isPinned ? .systemOrange : .secondaryLabelColor
-            pinBtn.font = .systemFont(ofSize: 11, weight: .semibold)
-            actionRow.addArrangedSubview(pinBtn)
-
-            let quitBtn = NSButton(
-                title: "Quit App", target: self, action: #selector(quitFocusedApp))
-            quitBtn.isBordered = false
-            quitBtn.contentTintColor = .systemRed
-            quitBtn.font = .systemFont(ofSize: 11, weight: .semibold)
-            actionRow.addArrangedSubview(quitBtn)
-
-            stackView.addArrangedSubview(actionRow)
-        }
-
-        let sep = NSBox()
-        sep.boxType = .separator
-        sep.translatesAutoresizingMaskIntoConstraints = false
-        stackView.addArrangedSubview(sep)
-        sep.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
+    private func renderWorkspaceList(query: String) {
+        addSectionHeader("Workspaces")
 
         let workspaces = WorkspaceManager.shared.workspaces
-        for (index, ws) in workspaces.enumerated() {
-            let shortcutHint = index < 9 ? "  [^\(index + 1)]" : ""
+        let activeId = WorkspaceManager.shared.activeWorkspaceId
+        var rendered = 0
 
-            // Group windows into app-based "folders" to avoid a noisy subtitle.
+        for (index, ws) in workspaces.enumerated() {
             var groupedApps = [String: Int]()
-            var groupBundleIDs = [String: Set<String>]()
             for win in ws.assignedWindows {
                 let name = appDisplayName(for: win.bundleID)
                 groupedApps[name, default: 0] += 1
-                groupBundleIDs[name, default: []].insert(win.bundleID)
             }
             let pinnedCount = ws.assignedWindows.filter(\.isPinned).count
-            let baseSubtitle = MenuBarManager.shared.compactWorkspaceSubtitle(from: groupedApps)
-            let subtitle = pinnedCount > 0 ? "\(baseSubtitle)  •  📌\(pinnedCount)" : baseSubtitle
+            let subtitle = MenuBarManager.shared.compactWorkspaceSubtitle(from: groupedApps)
 
             if !query.isEmpty {
                 let workspaceMatch = normalized(ws.name).contains(query)
@@ -488,163 +631,75 @@ class MenuBarViewController: NSViewController {
                 }
             }
 
-            // Build a proper two-line workspace row with fixed layout
-            let rowContainer = NSView()
-            rowContainer.translatesAutoresizingMaskIntoConstraints = false
+            let isActive = ws.id == activeId
+            let shortcut: String? = index < 9 ? "⌃\(index + 1)" : nil
 
-            // Color dot
-            let dotSize: CGFloat = 10
-            let dotView = NSImageView()
-            let dotImage = NSImage(size: NSSize(width: dotSize, height: dotSize))
-            dotImage.lockFocus()
-            ws.color.nsColor.set()
-            NSBezierPath(ovalIn: NSRect(origin: .zero, size: NSSize(width: dotSize, height: dotSize))).fill()
-            dotImage.unlockFocus()
-            dotView.image = dotImage
-            dotView.translatesAutoresizingMaskIntoConstraints = false
-            rowContainer.addSubview(dotView)
-
-            // Workspace name
-            let nameText = ws.name + shortcutHint
-            let nameLabel = NSTextField(labelWithString: nameText)
-            nameLabel.font = .boldSystemFont(ofSize: 13)
-            nameLabel.textColor = .labelColor
-            nameLabel.lineBreakMode = .byTruncatingTail
-            nameLabel.translatesAutoresizingMaskIntoConstraints = false
-            rowContainer.addSubview(nameLabel)
-
-            // Subtitle (app summary)
-            let subtitleLabel = NSTextField(labelWithString: subtitle)
-            subtitleLabel.font = .systemFont(ofSize: 11)
-            subtitleLabel.textColor = .secondaryLabelColor
-            subtitleLabel.lineBreakMode = .byTruncatingTail
-            subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-            rowContainer.addSubview(subtitleLabel)
-
-            // Clickable overlay button
-            let btn = NSButton(title: "", target: self, action: #selector(workspaceClicked(_:)))
-            btn.isBordered = false
-            btn.isTransparent = true
-            btn.associatedId = ws.id
-            btn.translatesAutoresizingMaskIntoConstraints = false
-            rowContainer.addSubview(btn)
-
-            NSLayoutConstraint.activate([
-                rowContainer.heightAnchor.constraint(equalToConstant: 38),
-
-                dotView.leadingAnchor.constraint(equalTo: rowContainer.leadingAnchor, constant: 2),
-                dotView.centerYAnchor.constraint(equalTo: rowContainer.centerYAnchor),
-                dotView.widthAnchor.constraint(equalToConstant: dotSize),
-                dotView.heightAnchor.constraint(equalToConstant: dotSize),
-
-                nameLabel.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 8),
-                nameLabel.trailingAnchor.constraint(equalTo: rowContainer.trailingAnchor),
-                nameLabel.topAnchor.constraint(equalTo: rowContainer.topAnchor, constant: 2),
-
-                subtitleLabel.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 8),
-                subtitleLabel.trailingAnchor.constraint(equalTo: rowContainer.trailingAnchor),
-                subtitleLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 1),
-
-                btn.topAnchor.constraint(equalTo: rowContainer.topAnchor),
-                btn.bottomAnchor.constraint(equalTo: rowContainer.bottomAnchor),
-                btn.leadingAnchor.constraint(equalTo: rowContainer.leadingAnchor),
-                btn.trailingAnchor.constraint(equalTo: rowContainer.trailingAnchor),
-            ])
-
-            // Background highlight for active workspace
-            if ws.id == WorkspaceManager.shared.activeWorkspaceId {
-                let bgBox = NSBox()
-                bgBox.boxType = .custom
-                bgBox.fillColor = NSColor.controlAccentColor.withAlphaComponent(0.2)
-                bgBox.borderWidth = 0
-                bgBox.cornerRadius = 6
-                bgBox.translatesAutoresizingMaskIntoConstraints = false
-
-                bgBox.addSubview(rowContainer)
-                NSLayoutConstraint.activate([
-                    rowContainer.topAnchor.constraint(equalTo: bgBox.topAnchor, constant: 4),
-                    rowContainer.leadingAnchor.constraint(equalTo: bgBox.leadingAnchor, constant: 6),
-                    rowContainer.trailingAnchor.constraint(equalTo: bgBox.trailingAnchor, constant: -6),
-                ])
-
-                if !groupedApps.isEmpty {
-                    let folders = makeFolderButtons(
-                        groupedApps: groupedApps,
-                        groupedBundleIDs: groupBundleIDs,
-                        workspaceId: ws.id
-                    )
-                    bgBox.addSubview(folders)
-                    NSLayoutConstraint.activate([
-                        folders.topAnchor.constraint(equalTo: rowContainer.bottomAnchor, constant: 4),
-                        folders.leadingAnchor.constraint(equalTo: bgBox.leadingAnchor, constant: 10),
-                        folders.trailingAnchor.constraint(equalTo: bgBox.trailingAnchor, constant: -10),
-                        folders.bottomAnchor.constraint(equalTo: bgBox.bottomAnchor, constant: -6),
-                    ])
-                } else {
-                    rowContainer.bottomAnchor.constraint(equalTo: bgBox.bottomAnchor, constant: -4).isActive = true
-                }
-
-                stackView.addArrangedSubview(bgBox)
-                bgBox.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
-            } else {
-                stackView.addArrangedSubview(rowContainer)
-                rowContainer.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
-
-                if !groupedApps.isEmpty {
-                    let folders = makeFolderButtons(
-                        groupedApps: groupedApps,
-                        groupedBundleIDs: groupBundleIDs,
-                        workspaceId: ws.id
-                    )
-                    stackView.addArrangedSubview(folders)
-                    folders.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
-                }
-            }
+            let row = WorkspaceRowView(
+                workspaceId: ws.id,
+                name: ws.name,
+                color: ws.color.nsColor,
+                subtitle: subtitle,
+                pinnedCount: pinnedCount,
+                shortcut: shortcut,
+                isActive: isActive,
+                target: self,
+                action: #selector(workspaceRowClicked(_:))
+            )
+            addRow(row, spacingAfter: 2)
+            rendered += 1
         }
 
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        stackView.addArrangedSubview(separator)
-        separator.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
-        stackView.setCustomSpacing(10, after: separator)
+        if rendered == 0 {
+            let empty = NSTextField(labelWithString: "No matches")
+            empty.font = .systemFont(ofSize: 11, weight: .regular)
+            empty.textColor = .tertiaryLabelColor
+            addRow(empty, spacingAfter: 4)
+        }
+    }
 
-        let newWsBtn = NSButton(
-            title: "+ New workspace", target: self, action: #selector(newWorkspaceClicked))
-        newWsBtn.isBordered = false
-        newWsBtn.contentTintColor = .labelColor
-        newWsBtn.font = .systemFont(ofSize: 13, weight: .medium)
-        stackView.addArrangedSubview(newWsBtn)
-        stackView.setCustomSpacing(4, after: newWsBtn)
+    private func renderFooter() {
+        let newBtn = makeFooterButton(
+            title: "New workspace",
+            symbol: "plus.circle.fill",
+            tint: .controlAccentColor,
+            action: #selector(newWorkspaceClicked)
+        )
+        addRow(newBtn, spacingAfter: 2)
 
-        let settingsBtn = NSButton(
-            title: "Settings...", target: self, action: #selector(settingsClicked))
-        settingsBtn.isBordered = false
-        settingsBtn.contentTintColor = .labelColor
-        settingsBtn.font = .systemFont(ofSize: 13, weight: .medium)
-        stackView.addArrangedSubview(settingsBtn)
-        stackView.setCustomSpacing(10, after: settingsBtn)
-
-        let separatorBottom = NSBox()
-        separatorBottom.boxType = .separator
-        separatorBottom.translatesAutoresizingMaskIntoConstraints = false
-        stackView.addArrangedSubview(separatorBottom)
-        separatorBottom.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
-        stackView.setCustomSpacing(8, after: separatorBottom)
+        let settingsBtn = makeFooterButton(
+            title: "Settings",
+            symbol: "gearshape.fill",
+            tint: .secondaryLabelColor,
+            action: #selector(settingsClicked)
+        )
+        addRow(settingsBtn, spacingAfter: 2)
 
         if #available(macOS 13.0, *) {
-            let status = (SMAppService.mainApp.status == .enabled)
-            let loginBtn = NSButton(
-                title: status ? "Launch at Login (Activated)" : "Enable Launch at Login",
-                target: self, action: #selector(toggleLogin))
-            loginBtn.isBordered = false
-            loginBtn.contentTintColor = status ? .systemGreen : .secondaryLabelColor
-            loginBtn.font = .systemFont(ofSize: 11, weight: .semibold)
-            stackView.addArrangedSubview(loginBtn)
+            let enabled = (SMAppService.mainApp.status == .enabled)
+            let loginBtn = makeFooterButton(
+                title: enabled ? "Launch at login · On" : "Launch at login",
+                symbol: enabled ? "checkmark.circle.fill" : "power.circle",
+                tint: enabled ? .systemGreen : .secondaryLabelColor,
+                action: #selector(toggleLogin)
+            )
+            addRow(loginBtn)
         }
 
-        // Force layout pass cleanly
-        self.view.layoutSubtreeIfNeeded()
+        let brandLabel = NSTextField(
+            labelWithString: "Deks · v\(ConfigPanelController.appVersionString())")
+        brandLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        brandLabel.textColor = .tertiaryLabelColor
+        brandLabel.alignment = .center
+        let brandWrapper = NSView()
+        brandWrapper.translatesAutoresizingMaskIntoConstraints = false
+        brandLabel.translatesAutoresizingMaskIntoConstraints = false
+        brandWrapper.addSubview(brandLabel)
+        NSLayoutConstraint.activate([
+            brandLabel.centerXAnchor.constraint(equalTo: brandWrapper.centerXAnchor),
+            brandLabel.topAnchor.constraint(equalTo: brandWrapper.topAnchor, constant: 10),
+            brandLabel.bottomAnchor.constraint(equalTo: brandWrapper.bottomAnchor),
+        ])
+        addRow(brandWrapper)
     }
 
     private func buildRenderSignature() -> String {
@@ -655,7 +710,7 @@ class MenuBarViewController: NSViewController {
             return "\(ws.id.uuidString)|\(ws.name)|\(ws.color.rawValue)|\(pins)|\(ids)"
         }.joined(separator: "||")
 
-        let focused = WindowTracker.shared.getFrontmostSessionWindow()?.id.uuidString ?? "none"
+        let focused = capturedLastFocused?.id.uuidString ?? "none"
         let telemetry = WindowTracker.shared.operationTelemetry
         let telemetrySig =
             "\(telemetry.totalFailures)|\(telemetry.hideFailures)|\(telemetry.showFailures)|\(telemetry.focusFailures)"
@@ -663,50 +718,48 @@ class MenuBarViewController: NSViewController {
         return [searchQuery, activeID, focused, telemetrySig, workspaces].joined(separator: "###")
     }
 
-    private func makeFolderButtons(
-        groupedApps: [String: Int],
-        groupedBundleIDs: [String: Set<String>],
-        workspaceId: UUID
-    ) -> NSView {
-        let sortedApps = groupedApps.sorted {
-            if $0.value == $1.value {
-                return $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending
-            }
-            return $0.value > $1.value
-        }
+    // MARK: Component factories
 
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 6
-        row.translatesAutoresizingMaskIntoConstraints = false
-
-        for (index, item) in sortedApps.enumerated() {
-            if index >= MenuBarManager.shared.maxFolderButtonsShown { break }
-            let title = item.value > 1 ? "\(item.key) (\(item.value))" : item.key
-            let button = NSButton(title: title, target: self, action: #selector(folderClicked(_:)))
-            button.isBordered = true
-            button.bezelStyle = .rounded
-            button.font = .systemFont(ofSize: 10, weight: .medium)
-            button.contentTintColor = .secondaryLabelColor
-            button.appFolderPayload = AppFolderPayload(
-                workspaceId: workspaceId,
-                appName: item.key,
-                bundleIDs: groupedBundleIDs[item.key] ?? []
-            )
-            row.addArrangedSubview(button)
-        }
-
-        if sortedApps.count > MenuBarManager.shared.maxFolderButtonsShown {
-            let extra = sortedApps.count - MenuBarManager.shared.maxFolderButtonsShown
-            let more = NSTextField(labelWithString: "+\(extra)")
-            more.font = .systemFont(ofSize: 10, weight: .semibold)
-            more.textColor = .tertiaryLabelColor
-            row.addArrangedSubview(more)
-        }
-
-        return row
+    private func makeIconButton(
+        symbol: String, tint: NSColor, tooltip: String, action: Selector
+    ) -> NSButton {
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)
+        let btn = NSButton()
+        btn.isBordered = false
+        btn.bezelStyle = .shadowlessSquare
+        btn.imagePosition = .imageOnly
+        btn.image = image
+        btn.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        btn.contentTintColor = tint
+        btn.toolTip = tooltip
+        btn.target = self
+        btn.action = action
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.setContentHuggingPriority(.required, for: .horizontal)
+        btn.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        btn.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        return btn
     }
+
+    private func makeFooterButton(
+        title: String, symbol: String, tint: NSColor, action: Selector
+    ) -> NSButton {
+        let btn = FooterButton(title: title, target: self, action: action)
+        btn.isBordered = false
+        btn.bezelStyle = .shadowlessSquare
+        btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        btn.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        btn.imagePosition = .imageLeft
+        btn.imageHugsTitle = true
+        btn.contentTintColor = tint
+        btn.font = .systemFont(ofSize: 12, weight: .medium)
+        btn.alignment = .left
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        return btn
+    }
+
+    // MARK: Actions
 
     @objc private func toggleLogin() {
         if #available(macOS 13.0, *) {
@@ -716,7 +769,7 @@ class MenuBarViewController: NSViewController {
                 } else {
                     try SMAppService.mainApp.register()
                 }
-                MenuBarManager.shared.updateTitle()  // Refresh the UI state
+                MenuBarManager.shared.updateTitle()
             } catch {
                 TelemetryManager.shared.record(
                     event: "login_service_toggle_failed",
@@ -729,7 +782,7 @@ class MenuBarViewController: NSViewController {
 
     @objc private func quickAssignChanged(_ sender: NSPopUpButton) {
         guard let targetId = sender.selectedItem?.representedObject as? UUID else { return }
-        guard let focused = WindowTracker.shared.getFrontmostSessionWindow() else { return }
+        guard let focused = capturedLastFocused else { return }
 
         for i in 0..<WorkspaceManager.shared.workspaces.count {
             WorkspaceManager.shared.workspaces[i].assignedWindows.removeAll { $0.id == focused.id }
@@ -758,46 +811,31 @@ class MenuBarViewController: NSViewController {
     }
 
     @objc private func togglePinFocusedWindow() {
-        guard let focused = WindowTracker.shared.getFrontmostSessionWindow() else { return }
+        guard let focused = capturedLastFocused else { return }
         _ = WorkspaceManager.shared.togglePin(windowId: focused.id)
+        lastRenderSignature = ""
         reload()
     }
 
     @objc private func quitFocusedApp() {
-        guard let focused = WindowTracker.shared.getFrontmostSessionWindow() else { return }
+        guard let focused = capturedLastFocused else { return }
         guard focused.appName != "Deks" else { return }
 
         _ = WorkspaceManager.shared.quitAppAndRemoveAssignments(bundleID: focused.bundleID)
+        lastRenderSignature = ""
         reload()
     }
 
-    @objc private func folderClicked(_ sender: NSButton) {
-        guard let payload = sender.appFolderPayload as? AppFolderPayload else { return }
-
-        WorkspaceManager.shared.switchTo(
-            workspaceId: payload.workspaceId,
-            source: "menu_folder_click"
-        )
-        WindowTracker.shared.synchronizeSession(workspaces: WorkspaceManager.shared.workspaces)
-
-        guard
-            let ws = WorkspaceManager.shared.workspaces.first(where: {
-                $0.id == payload.workspaceId
-            }),
-            let ref = ws.assignedWindows.first(where: { payload.bundleIDs.contains($0.bundleID) }),
-            let sessionWin = WindowTracker.shared.sessionWindows[ref.id]
-        else {
-            MenuBarManager.shared.closePopover()
-            return
+    @objc private func workspaceRowClicked(_ sender: Any) {
+        let id: UUID?
+        if let row = sender as? WorkspaceRowView {
+            id = row.workspaceId
+        } else if let btn = sender as? NSButton {
+            id = btn.associatedId
+        } else {
+            id = nil
         }
-
-        _ = WindowTracker.shared.showSessionWindow(sessionWin)
-        _ = WindowTracker.shared.focusAndRaiseSessionWindow(sessionWin)
-        MenuBarManager.shared.closePopover()
-    }
-
-    @objc private func workspaceClicked(_ sender: NSButton) {
-        guard let id = sender.associatedId else { return }
+        guard let id else { return }
         WorkspaceManager.shared.switchTo(
             workspaceId: id,
             source: "menu_workspace_click"
@@ -822,28 +860,342 @@ class MenuBarViewController: NSViewController {
             MenuBarManager.shared.closePopover()
             return
         }
+        // Close the popover SYNCHRONOUSLY (no fade-out animation) before
+        // showing Settings. `performClose` animates asynchronously — even
+        // with a deferred show, the popover's floating-level window was
+        // still in flight when the settings window became key, which caused
+        // the "need to click Settings twice" bug.
+        MenuBarManager.shared.closePopoverImmediately()
         ConfigPanelController.shared.showWindow()
-        MenuBarManager.shared.closePopover()
     }
 }
 
-// Helper association
+// MARK: - Workspace row view
+
+final class WorkspaceRowView: NSView {
+    let workspaceId: UUID
+    private let isActive: Bool
+    private weak var target: AnyObject?
+    private let action: Selector
+    private var isHovered = false
+    private var isPressed = false
+    private var trackingArea: NSTrackingArea?
+
+    init(
+        workspaceId: UUID,
+        name: String,
+        color: NSColor,
+        subtitle: String?,
+        pinnedCount: Int,
+        shortcut: String?,
+        isActive: Bool,
+        target: AnyObject?,
+        action: Selector
+    ) {
+        self.workspaceId = workspaceId
+        self.isActive = isActive
+        self.target = target
+        self.action = action
+        super.init(frame: .zero)
+
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        if #available(macOS 12.0, *) {
+            layer?.cornerCurve = .continuous
+        }
+        updateBackground()
+
+        let dotSize: CGFloat = 10
+        let dot = NSView()
+        dot.wantsLayer = true
+        dot.layer?.backgroundColor = color.cgColor
+        dot.layer?.cornerRadius = dotSize / 2
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(dot)
+
+        let nameLabel = NSTextField(labelWithString: name)
+        nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        nameLabel.textColor = isActive ? .controlAccentColor : .labelColor
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addSubview(nameLabel)
+
+        let hasSubtitle = !(subtitle?.isEmpty ?? true)
+        let subtitleLabel = NSTextField(labelWithString: subtitle ?? "")
+        subtitleLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        subtitleLabel.isHidden = !hasSubtitle
+        addSubview(subtitleLabel)
+
+        let trailingStack = NSStackView()
+        trailingStack.orientation = .horizontal
+        trailingStack.alignment = .centerY
+        trailingStack.spacing = 6
+        trailingStack.translatesAutoresizingMaskIntoConstraints = false
+        trailingStack.setContentHuggingPriority(.required, for: .horizontal)
+        trailingStack.setContentCompressionResistancePriority(.required, for: .horizontal)
+        addSubview(trailingStack)
+
+        if pinnedCount > 0 {
+            let pinWrap = NSStackView()
+            pinWrap.orientation = .horizontal
+            pinWrap.spacing = 2
+            pinWrap.alignment = .centerY
+
+            let icon = NSImageView()
+            icon.image = NSImage(
+                systemSymbolName: "pin.fill", accessibilityDescription: "Pinned windows")
+            icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+            icon.contentTintColor = .tertiaryLabelColor
+
+            let countLabel = NSTextField(labelWithString: "\(pinnedCount)")
+            countLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+            countLabel.textColor = .tertiaryLabelColor
+
+            pinWrap.addArrangedSubview(icon)
+            pinWrap.addArrangedSubview(countLabel)
+            trailingStack.addArrangedSubview(pinWrap)
+        }
+
+        if let shortcut = shortcut {
+            let badge = makeShortcutBadge(text: shortcut)
+            trailingStack.addArrangedSubview(badge)
+        }
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 46),
+
+            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: dotSize),
+            dot.heightAnchor.constraint(equalToConstant: dotSize),
+
+            nameLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 10),
+            nameLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: trailingStack.leadingAnchor, constant: -8),
+
+            subtitleLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            subtitleLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: trailingStack.leadingAnchor, constant: -8),
+
+            trailingStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            trailingStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        if hasSubtitle {
+            NSLayoutConstraint.activate([
+                nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+                subtitleLabel.topAnchor.constraint(
+                    equalTo: nameLabel.bottomAnchor, constant: 2),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ])
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func makeShortcutBadge(text: String) -> NSView {
+        let label = NSTextField(labelWithString: text)
+        label.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
+
+        let badge = NSView()
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(PopoverStyle.subtleFill).cgColor
+        badge.layer?.cornerRadius = 4
+        badge.translatesAutoresizingMaskIntoConstraints = false
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: badge.leadingAnchor, constant: 5),
+            label.trailingAnchor.constraint(equalTo: badge.trailingAnchor, constant: -5),
+            label.topAnchor.constraint(equalTo: badge.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: badge.bottomAnchor, constant: -2),
+            badge.heightAnchor.constraint(equalToConstant: 18),
+        ])
+        return badge
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea = trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateBackground()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        updateBackground()
+    }
+
+    private var mouseDownLocation: NSPoint?
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownLocation = event.locationInWindow
+        isPressed = true
+        updateBackground()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let wasPressed = isPressed
+        isPressed = false
+        updateBackground()
+        defer { mouseDownLocation = nil }
+        guard wasPressed, let start = mouseDownLocation else { return }
+        let end = event.locationInWindow
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        if dx * dx + dy * dy > 25 { return }
+        let local = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(local) else { return }
+        if let target, target.responds(to: action) {
+            _ = target.perform(action, with: self)
+        }
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    private func updateBackground() {
+        let color: NSColor
+        if isActive {
+            let alpha =
+                isPressed
+                ? PopoverStyle.activeHoverFill + 0.06
+                : (isHovered ? PopoverStyle.activeHoverFill : PopoverStyle.activeFill)
+            color = NSColor.controlAccentColor.withAlphaComponent(alpha)
+        } else if isPressed {
+            color = NSColor.labelColor.withAlphaComponent(PopoverStyle.hoverFill + 0.05)
+        } else if isHovered {
+            color = NSColor.labelColor.withAlphaComponent(PopoverStyle.hoverFill)
+        } else {
+            color = .clear
+        }
+        layer?.backgroundColor = color.cgColor
+    }
+}
+
+// MARK: - Footer button (hover highlight + left-indented content)
+
+final class FooterButtonCell: NSButtonCell {
+    var leftInset: CGFloat = PopoverStyle.footerIconIndent
+    var iconTitleGap: CGFloat = 8
+
+    override func drawImage(_ image: NSImage, withFrame frame: NSRect, in controlView: NSView) {
+        var f = frame
+        f.origin.x += leftInset
+        super.drawImage(image, withFrame: f, in: controlView)
+    }
+
+    override func drawTitle(
+        _ title: NSAttributedString, withFrame frame: NSRect, in controlView: NSView
+    ) -> NSRect {
+        var f = frame
+        f.origin.x += leftInset + iconTitleGap
+        return super.drawTitle(title, withFrame: f, in: controlView)
+    }
+}
+
+final class FooterButton: NSButton {
+    private var trackingArea: NSTrackingArea?
+
+    override class var cellClass: AnyClass? {
+        get { FooterButtonCell.self }
+        set {}
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    convenience init(title: String, target: AnyObject?, action: Selector) {
+        self.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea = trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor =
+            NSColor.labelColor.withAlphaComponent(PopoverStyle.hoverFill).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Force the entire button frame to be clickable. Default NSButton
+    /// hit-testing when `isBordered = false` is combined with our custom
+    /// `FooterButtonCell` (which shifts the drawn icon and title) can leave
+    /// dead zones — clicking between the icon and the title falls through
+    /// the popover to the app underneath, stealing focus back to whatever
+    /// was frontmost and looking like the click "failed."
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        return bounds.contains(local) ? self : nil
+    }
+}
+
+// MARK: - Helper association (workspace id pointer)
+
 @MainActor private var associatedIdKey: UInt8 = 0
-@MainActor private var associatedFolderPayloadKey: UInt8 = 0
 extension NSButton {
     var associatedId: UUID? {
         get { objc_getAssociatedObject(self, &associatedIdKey) as? UUID }
         set {
             objc_setAssociatedObject(
                 self, &associatedIdKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-        }
-    }
-
-    var appFolderPayload: Any? {
-        get { objc_getAssociatedObject(self, &associatedFolderPayloadKey) }
-        set {
-            objc_setAssociatedObject(
-                self, &associatedFolderPayloadKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         }
     }
 }

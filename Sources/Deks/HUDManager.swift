@@ -159,12 +159,27 @@ class HUDManager {
 
         panel.contentView = visualEffect
         panel.alphaValue = 0.0
+
+        // Pre-shrink to 92% centered on the final frame. The entrance
+        // animation grows the panel back to 100% while fading in, producing
+        // a soft bounce instead of a flat alpha fade.
+        let finalFrame = panel.frame
+        let shrink: CGFloat = 0.92
+        let startFrame = NSRect(
+            x: finalFrame.midX - finalFrame.width * shrink / 2,
+            y: finalFrame.midY - finalFrame.height * shrink / 2,
+            width: finalFrame.width * shrink,
+            height: finalFrame.height * shrink
+        )
+        panel.setFrame(startFrame, display: false)
         panel.orderFront(nil)
 
         self.window = panel
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(finalFrame, display: true)
             panel.animator().alphaValue = 1.0
         }
 
