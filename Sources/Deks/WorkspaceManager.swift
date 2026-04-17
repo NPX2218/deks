@@ -1240,6 +1240,17 @@ class WorkspaceManager {
         HotkeyManager.shared.registerGlobalCallback(hotkey: controlShiftD) {
             WorkspaceManager.shared.toggleDeksEnabled()
         }
+
+        // Command palette (Control + Option + W) — Raycast-style window layout
+        // commands. W for "Window". Keycode 13 is W. Avoids ⌃⌥Space which
+        // macOS reserves for "Select next input source".
+        let controlOptionW = HotkeyCombo(
+            modifiers: NSEvent.ModifierFlags([.control, .option]).rawValue,
+            keyCode: 13
+        )
+        HotkeyManager.shared.registerGlobalCallback(hotkey: controlOptionW) {
+            CommandPalette.shared.toggle()
+        }
     }
 
     func saveWorkspaces() {
