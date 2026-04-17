@@ -50,3 +50,6 @@ Carthage/Build/
 
 # Local app bundle
 Deks.app/
+
+# Release artifacts
+release/
