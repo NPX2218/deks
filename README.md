@@ -36,13 +36,14 @@
   <a href="#how-it-works">How it works</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#building-from-source">Build from source</a> •
+  <a href="#development">Development</a> •
   <a href="#roadmap">Roadmap</a>
 </p>
 
 ---
 
 <p align="center">
-  <img src="assets/deks-hero-preview.svg" width="720" alt="Deks workspace config panel">
+  <img src="assets/screenshots/hero-workspaces.png" width="820" alt="Deks settings — drag-and-drop window-to-workspace organization">
 </p>
 
 ---
@@ -59,38 +60,26 @@ Existing tools work at the **app level** — so "Brave" is either visible or hid
 
 ### Download (recommended)
 
-Download the latest `.dmg` from [**Releases**](https://github.com/NPX2218/deks/releases/latest):
+Grab the latest build from [**Releases**](https://github.com/NPX2218/deks/releases/latest):
 
-> **[⬇ Download Deks for macOS](https://github.com/NPX2218/deks/releases/latest/download/Deks.dmg)**
+> **[⬇ Download Deks for macOS](https://github.com/NPX2218/deks/releases/latest/download/Deks.zip)**
 
 Requires macOS 13.0 (Ventura) or later. Supports both Apple Silicon and Intel Macs.
 
-### Free unsigned release path (no paid Apple Developer account)
+### First-launch steps
 
-If you do not have a paid Apple Developer account, you can still distribute Deks on GitHub.
+Because Deks is distributed outside the Mac App Store, macOS Gatekeeper may block the first launch:
 
-- Build and upload a `.zip` or `.dmg` release artifact.
-- Tell users the app is unsigned and not notarized.
-- Include first-launch trust steps in the release notes.
+1. Move `Deks.app` into `/Applications`.
+2. Right-click `Deks.app` and choose **Open**.
+3. Click **Open** in the Gatekeeper warning.
+4. If still blocked, go to **System Settings → Privacy & Security** and click **Open Anyway**.
+5. Grant Accessibility permission when prompted (required for window management).
 
-Suggested first-launch steps for users:
-
-1. Move `Deks.app` to Applications.
-2. Right-click `Deks.app` and choose Open.
-3. Click Open in the warning dialog.
-4. If blocked, go to System Settings > Privacy & Security and click Open Anyway.
-5. After granting Accessibility permission, open the Deks popup/settings and reorganize windows into the correct workspaces so the initial layout matches your intent.
-
-Optional terminal fallback for advanced users:
+Terminal fallback if Gatekeeper is stuck:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Deks.app
-```
-
-### Homebrew
-
-```bash
-brew install --cask deks
 ```
 
 ### Build from source
@@ -102,6 +91,21 @@ See [Building from source](#building-from-source) below.
 ### 🪟 Window-level workspace switching
 
 Not just apps — individual windows. Three Brave windows can live in three different workspaces.
+
+<p align="center">
+  <video src="assets/demos/workspace-switching.mp4" controls muted loop width="820">
+    Your browser does not support embedded video.
+    <a href="assets/demos/workspace-switching.mp4">Download the demo</a>.
+  </video>
+</p>
+
+### 🎛 Command palette
+
+Press `⌃⌥W` anywhere to open a Raycast-style palette that's aware of the current workspace. Apply window layouts (halves, quarters, thirds, workspace tiling, cascade, grid), fuzzy-search every open window and focus it (auto-switching workspaces when needed), or evaluate quick math inline — all keyboard-first. Context-aware suggestions at the top pick layouts based on window count and screen aspect.
+
+<p align="center">
+  <img src="assets/screenshots/command-palette.png" width="720" alt="Deks command palette showing context-aware layout suggestions">
+</p>
 
 ### ⚡ Instant hotkey switching
 
@@ -117,7 +121,11 @@ Custom name, custom color. The color shows in the menu bar, quick switcher, and 
 
 ### 📊 Menu bar widget
 
-Always-visible colored dot + workspace name in the menu bar. Click for a dropdown of all workspaces.
+Always-visible colored dot + workspace name in the menu bar. Click for a dropdown of all workspaces, the last-focused window with quick actions, and footer shortcuts for creating workspaces or opening settings.
+
+<p align="center">
+  <img src="assets/screenshots/menu-bar-popover.png" width="380" alt="Deks menu bar popover showing workspaces, last-focused window, and footer actions">
+</p>
 
 ### 🔎 Quick switcher
 
@@ -144,15 +152,21 @@ A gorgeous translucent overlay flashes on screen when you switch workspaces — 
 Deks uses the macOS Accessibility API (`AXUIElement`) to enumerate and control individual windows. When you switch workspaces, it hides all non-workspace windows and shows the ones that belong to your active workspace. No virtual desktops, no macOS Spaces — just smart window visibility management.
 
 ```
-┌─────────────────────────────────────┐
-│          WorkspaceManager           │
-│  • switchTo(workspace)              │
-│  • assignWindow(window, workspace)  │
-├───────────┬─────────────────────────┤
-│ WindowTracker    │    IdleManager   │
-│ • AXUIElement    │  • SIGSTOP/CONT │
-│ • CGWindowList   │  • Per-workspace │
-└───────────┴─────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                WorkspaceManager                  │
+│  • switchTo(workspace)                           │
+│  • assignWindow(window, workspace)               │
+│  • Global hotkey registration                    │
+├────────────────────┬─────────────────────────────┤
+│   WindowTracker    │       IdleManager           │
+│ • AXUIElement      │  • SIGSTOP / SIGCONT        │
+│ • CGWindowList     │  • Per-workspace pause      │
+├────────────────────┼─────────────────────────────┤
+│  CommandPalette    │   WindowLayoutManager       │
+│ • Raycast-style UI │  • Halves / quarters        │
+│ • Window search    │  • Grid / columns / rows    │
+│ • Inline math      │  • Cascade / maximize       │
+└────────────────────┴─────────────────────────────┘
 ```
 
 ## Configuration
@@ -162,7 +176,8 @@ Deks stores its config in `~/Library/Application Support/Deks/`:
 | File               | Contents                                          |
 | ------------------ | ------------------------------------------------- |
 | `workspaces.json`  | Workspace definitions, window assignments, colors |
-| `preferences.json` | Hotkeys, idle timeout, menu bar preferences       |
+| `preferences.json` | Idle timeout, menu-bar logo toggle, developer diagnostics, workspace-switch modifier, window gap |
+| `Logs/`            | Rolling telemetry logs (only populated when developer diagnostics is enabled) |
 
 When a new window opens that isn't assigned to any workspace, it joins the currently active workspace automatically.
 
@@ -178,12 +193,28 @@ When a new window opens that isn't assigned to any workspace, it joins the curre
 | Release `⌥`  | Commit the selected workspace                            |
 | `⎋`          | Cancel the cycle without switching                       |
 | `⌃⇧N`        | Create new workspace                                     |
+| `⌃⇧D`        | Toggle Deks on/off (with HUD confirmation)               |
+| `⌃⌥W`        | Open the command palette (layouts, window search, calculator) |
+
+Inside the command palette:
+
+| Key          | Action                                                   |
+| ------------ | -------------------------------------------------------- |
+| `↑` `↓`      | Navigate commands (skips section headers)                |
+| `⇥` / `⇧⇥`   | Cycle the target window within the active workspace      |
+| `⏎`          | Run the selected layout, focus a window, or copy a calculator result |
+| `⎋`          | Close the palette                                        |
+| Click outside| Dismisses the palette                                    |
 
 The quick switcher behaves like macOS `⌘Tab`: a quick `⌥Tab` and release jumps back to the previous workspace (great for flip-flopping between two). Hold `⌥` and keep tapping `Tab` to cycle forward, `⇧Tab` to go backward, `⎋` to cancel. Start typing any letter to fall back to the search-filter mode.
 
 Settings shows a live preview of every edit: drag a window from one workspace to another and the window hides or reappears on screen immediately so you can see what the workspace will look like.
 
-The per-workspace switch modifier is configurable in Settings.
+The settings window is tabbed: **Workspaces** (drag-and-drop window assignment, per-workspace color and idle behavior), **Shortcuts** (full keyboard reference), **Preferences** (menu bar logo, window gap, diagnostics, reset), and **About** (version, GitHub, credits). The per-workspace switch modifier is persisted in preferences.
+
+<p align="center">
+  <img src="assets/screenshots/settings-about-tab.png" width="720" alt="Deks settings window — About tab">
+</p>
 
 ## Building from source
 
@@ -206,49 +237,46 @@ swift build -c release
 
 ## Permissions
 
-Deks requires **Accessibility** permission to manage windows. On first launch, macOS will prompt you to grant this in System Settings → Privacy & Security → Accessibility.
+Deks requires **Accessibility** permission to manage windows. On first launch, macOS prompts you to grant it in **System Settings → Privacy & Security → Accessibility**.
 
-If you install an unsigned build from GitHub, macOS Gatekeeper may block first launch until you approve it via right-click Open (or Open Anyway in Privacy & Security).
+If macOS still shows Deks as disabled after you enable it, toggle the switch off and on once, then click **Check Again** in Deks's in-app setup window.
 
-After Accessibility is enabled, open the Deks popup and quickly reorganize window assignments once so future switches behave predictably.
+No other permissions are required. Deks does not access your files, camera, microphone, or network.
 
-### Avoid repeated re-approval during local builds
+## Development
 
-When reinstalling locally, replace the app **in place** instead of deleting/re-adding it:
+Tips for contributors and anyone rebuilding Deks locally.
 
-```bash
-./scripts/install-app.sh
-```
-
-For the best chance of keeping permission stable across updates, use a consistent signing identity:
+Keep accessibility permission stable across rebuilds by using a consistent signing identity:
 
 ```bash
 DEKS_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/install-app.sh
 ```
 
-If macOS still shows Deks as disabled, toggle Deks off and on in Accessibility once, then click **Check Again** in the in-app setup window.
-
-If you are developing locally without an Apple signing identity, Deks is ad-hoc signed and macOS may treat rebuilt binaries as new trust targets.
-
-To reinstall without changing the binary/signature hash while testing permissions:
+Reinstall without rebuilding (useful when only testing permission flows):
 
 ```bash
 DEKS_SKIP_BUILD=1 ./scripts/install-app.sh
 ```
 
-To run a clean permission reset and reinstall in one command:
+Clean accessibility state and reinstall in one step:
 
 ```bash
 DEKS_RESET_ACCESSIBILITY=1 ./scripts/install-app.sh
 ```
 
-If macOS permission state is badly stuck, use a global reset (this resets Accessibility permissions for all apps):
+Global accessibility reset (resets permissions for every app on the system — use sparingly):
 
 ```bash
 DEKS_RESET_ACCESSIBILITY=1 DEKS_RESET_SCOPE=global ./scripts/install-app.sh
 ```
 
-No other permissions are required. Deks does not access your files, camera, microphone, or network.
+Ship a signed, notarized release zip to `release/`:
+
+```bash
+DEKS_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
+  ./scripts/release-harden.sh 0.3.0
+```
 
 ## Privacy
 
@@ -269,6 +297,8 @@ Deks is private by design:
 - [x] Launch on login
 - [x] Floating (pinned) windows
 - [x] Native HUD overlay
+- [x] Raycast-style command palette with window layouts
+- [x] Global window search across workspaces
 - [ ] Browser tab group awareness
 - [ ] Workspace wallpapers
 - [ ] Focus mode integration
@@ -279,7 +309,7 @@ Deks is private by design:
 - [ ] Dock morphing per workspace
 - [ ] Multi-monitor independence
 - [ ] Workspace templates & community sharing
-- [ ] Shortcuts / Raycast integration
+- [ ] Rebindable palette and workspace hotkeys
 
 ## Contributing
 
