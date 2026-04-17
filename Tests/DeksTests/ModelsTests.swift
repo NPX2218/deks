@@ -172,7 +172,8 @@ final class ModelsTests: XCTestCase {
             idleTimeoutMinutes: 12,
             showLogoInMenuBar: true,
             developerDiagnosticsEnabled: true,
-            workspaceSwitchModifier: .option
+            workspaceSwitchModifier: .option,
+            windowGap: 14
         )
         let data = try JSONEncoder().encode(prefs)
         let decoded = try JSONDecoder().decode(Preferences.self, from: data)
@@ -180,6 +181,21 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(decoded.showLogoInMenuBar)
         XCTAssertTrue(decoded.developerDiagnosticsEnabled)
         XCTAssertEqual(decoded.workspaceSwitchModifier, .option)
+        XCTAssertEqual(decoded.windowGap, 14)
+    }
+
+    func testPreferencesDefaultsWindowGapWhenMissing() throws {
+        // Legacy payload without windowGap must decode with the default of 10.
+        let legacyJSON = """
+            {
+              "idleTimeoutMinutes": 5,
+              "showLogoInMenuBar": false,
+              "developerDiagnosticsEnabled": false,
+              "workspaceSwitchModifier": "control"
+            }
+            """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(Preferences.self, from: legacyJSON)
+        XCTAssertEqual(decoded.windowGap, 10)
     }
 
     func testPreferencesFallsBackToControlModifierWhenMissing() throws {
@@ -251,7 +267,8 @@ final class ModelsTests: XCTestCase {
             idleTimeoutMinutes: 5,
             showLogoInMenuBar: false,
             developerDiagnosticsEnabled: false,
-            workspaceSwitchModifier: .command
+            workspaceSwitchModifier: .command,
+            windowGap: 12
         )
         let data = try JSONEncoder().encode(prefs)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -262,6 +279,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertNotNil(json["showLogoInMenuBar"])
         XCTAssertNotNil(json["developerDiagnosticsEnabled"])
         XCTAssertNotNil(json["workspaceSwitchModifier"])
+        XCTAssertNotNil(json["windowGap"])
         // No phantom "defaultNewWindowBehavior" survivor from the removed
         // preference, which would corrupt downgraded installs.
         XCTAssertNil(json["defaultNewWindowBehavior"])

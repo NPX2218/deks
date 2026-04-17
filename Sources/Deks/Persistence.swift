@@ -6,7 +6,8 @@ class Persistence {
         idleTimeoutMinutes: 5,
         showLogoInMenuBar: false,
         developerDiagnosticsEnabled: false,
-        workspaceSwitchModifier: .control
+        workspaceSwitchModifier: .control,
+        windowGap: 10
     )
 
     static var appSupportDir: URL {

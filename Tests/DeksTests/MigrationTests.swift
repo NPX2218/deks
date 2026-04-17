@@ -19,6 +19,7 @@ final class MigrationTests: XCTestCase {
         XCTAssertFalse(decoded.showLogoInMenuBar)
         XCTAssertFalse(decoded.developerDiagnosticsEnabled)
         XCTAssertEqual(decoded.workspaceSwitchModifier, .control)
+        XCTAssertEqual(decoded.windowGap, 10)
     }
 
     func testWindowRefDecodesLegacyPayloadWithoutPinnedFlag() throws {

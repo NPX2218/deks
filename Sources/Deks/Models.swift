@@ -91,17 +91,25 @@ struct Preferences: Codable {
     var showLogoInMenuBar: Bool
     var developerDiagnosticsEnabled: Bool
     var workspaceSwitchModifier: WorkspaceSwitchModifier
+    /// Padding in points that the command-palette layout commands leave
+    /// around each tiled window (including between adjacent tiles). Defaults
+    /// to 10 for a soft "island" look with clear breathing room. Users can
+    /// push this up to 32 via the Settings slider, or down to 0 for a flush
+    /// layout.
+    var windowGap: Int
 
     init(
         idleTimeoutMinutes: Int,
         showLogoInMenuBar: Bool,
         developerDiagnosticsEnabled: Bool,
-        workspaceSwitchModifier: WorkspaceSwitchModifier
+        workspaceSwitchModifier: WorkspaceSwitchModifier,
+        windowGap: Int = 10
     ) {
         self.idleTimeoutMinutes = idleTimeoutMinutes
         self.showLogoInMenuBar = showLogoInMenuBar
         self.developerDiagnosticsEnabled = developerDiagnosticsEnabled
         self.workspaceSwitchModifier = workspaceSwitchModifier
+        self.windowGap = windowGap
     }
 
     enum CodingKeys: String, CodingKey {
@@ -109,6 +117,7 @@ struct Preferences: Codable {
         case showLogoInMenuBar
         case developerDiagnosticsEnabled
         case workspaceSwitchModifier
+        case windowGap
     }
 
     init(from decoder: Decoder) throws {
@@ -126,6 +135,9 @@ struct Preferences: Codable {
                 forKey: .workspaceSwitchModifier
             )
             ?? .control
+        windowGap =
+            try container.decodeIfPresent(Int.self, forKey: .windowGap)
+            ?? 10
     }
 
     func encode(to encoder: Encoder) throws {
@@ -134,6 +146,7 @@ struct Preferences: Codable {
         try container.encode(showLogoInMenuBar, forKey: .showLogoInMenuBar)
         try container.encode(developerDiagnosticsEnabled, forKey: .developerDiagnosticsEnabled)
         try container.encode(workspaceSwitchModifier, forKey: .workspaceSwitchModifier)
+        try container.encode(windowGap, forKey: .windowGap)
     }
 }
 
