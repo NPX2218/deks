@@ -2,7 +2,16 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-final class DismissOnBlurWindow: NSWindow {
+/// The settings window is a panel (not a regular NSWindow) with
+/// `.nonactivatingPanel` so it can become key without Deks needing to be a
+/// `.regular` application. HelpPanel and CommandPalette use the same trick.
+/// Without this, accessory apps on macOS 14+ can't reliably bring a regular
+/// titled window to the front — which was the "Settings needs two clicks"
+/// bug.
+final class DismissOnBlurWindow: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
     override func resignKey() {
         super.resignKey()
         TelemetryManager.shared.record(
@@ -69,6 +78,13 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
     private var rightWindows: [UnifiedWindow] = []
     private var stableOrderByMode: [String: [UUID]] = [:]
 
+    private let tabBar = NSSegmentedControl()
+    private let tabContainer = NSView()
+    private var workspacesTabView = NSView()
+    private var shortcutsTabView = NSView()
+    private var preferencesTabView = NSView()
+    private var aboutTabView = NSView()
+
     private let leftNameField = NSTextField()
     private let leftColorSegment = NSSegmentedControl()
     private let leftIdleToggle = NSButton(
@@ -77,6 +93,8 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         checkboxWithTitle: "Show Deks logo in menu bar", target: nil, action: nil)
     private let developerDiagnosticsToggle = NSButton(
         checkboxWithTitle: "Enable developer diagnostics logs", target: nil, action: nil)
+    private let windowGapSlider = NSSlider()
+    private let windowGapValueLabel = NSTextField(labelWithString: "10 px")
     private let openLogsFolderButton = NSButton(title: "Open Logs Folder", target: nil, action: nil)
     private let quitSelectedAppButton = NSButton(title: "Quit Selected App", target: nil, action: nil)
     private let resetDataButton = NSButton(title: "Reset All Data", target: nil, action: nil)
@@ -91,10 +109,15 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         // Create an elegant, modern, vibrant macOS window
         let window = DismissOnBlurWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: [
+                .titled, .closable, .resizable, .fullSizeContentView,
+                .nonactivatingPanel,
+            ],
             backing: .buffered,
             defer: false
         )
+        window.level = .normal
+        window.hidesOnDeactivate = false
         window.center()
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden  // We'll rely on the elegant layout structure
@@ -135,6 +158,11 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
             ]
         )
 
+        // Settings is an NSPanel with `.nonactivatingPanel` now (see
+        // `DismissOnBlurWindow`) so it can become key even though Deks is an
+        // accessory app. The regular `makeKeyAndOrderFront` path is enough —
+        // no activation-policy promotion and no `orderFrontRegardless` hack
+        // needed.
         super.showWindow(nil)
         self.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -164,15 +192,18 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         let headerCard = NSVisualEffectView()
         headerCard.blendingMode = .behindWindow
         headerCard.state = .active
-        headerCard.material = .menu
+        headerCard.material = .hudWindow
         headerCard.wantsLayer = true
-        headerCard.layer?.cornerRadius = 12
+        headerCard.layer?.cornerRadius = 14
         headerCard.layer?.masksToBounds = true
+        headerCard.layer?.borderWidth = 1
+        headerCard.layer?.borderColor =
+            NSColor.white.withAlphaComponent(0.08).cgColor
         headerCard.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(headerCard)
 
         let titleLabel = NSTextField(labelWithString: "Deks Settings")
-        titleLabel.font = .systemFont(ofSize: 25, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.isEditable = false
         titleLabel.isBordered = false
@@ -187,8 +218,8 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
 
         let subtitleLabel = NSTextField(
             labelWithString:
-                "Double-click or drag windows across panels to organize your workspaces.")
-        subtitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+                "Organize windows into workspaces, learn the shortcuts, tune preferences.")
+        subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
         subtitleLabel.textColor = .secondaryLabelColor
         subtitleLabel.maximumNumberOfLines = 2
         subtitleLabel.lineBreakMode = .byWordWrapping
@@ -198,12 +229,6 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         headerCard.addSubview(subtitleLabel)
 
-        logoInHeaderToggle.target = self
-        logoInHeaderToggle.action = #selector(logoHeaderToggled(_:))
-        logoInHeaderToggle.font = .systemFont(ofSize: 12, weight: .medium)
-        logoInHeaderToggle.translatesAutoresizingMaskIntoConstraints = false
-        headerCard.addSubview(logoInHeaderToggle)
-
         quitDeksButton.target = self
         quitDeksButton.action = #selector(quitDeksClicked)
         quitDeksButton.bezelStyle = .rounded
@@ -212,10 +237,29 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         quitDeksButton.translatesAutoresizingMaskIntoConstraints = false
         headerCard.addSubview(quitDeksButton)
 
+        tabBar.segmentCount = 4
+        tabBar.setLabel("Workspaces", forSegment: 0)
+        tabBar.setLabel("Shortcuts", forSegment: 1)
+        tabBar.setLabel("Preferences", forSegment: 2)
+        tabBar.setLabel("About", forSegment: 3)
+        tabBar.setWidth(110, forSegment: 0)
+        tabBar.setWidth(110, forSegment: 1)
+        tabBar.setWidth(110, forSegment: 2)
+        tabBar.setWidth(90, forSegment: 3)
+        tabBar.selectedSegment = 0
+        tabBar.segmentStyle = .texturedSquare
+        tabBar.controlSize = .large
+        tabBar.target = self
+        tabBar.action = #selector(tabChanged(_:))
+        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(tabBar)
+
+        tabContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(tabContainer)
+
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(splitView)
 
         let leftContainer = NSView()
         leftContainer.wantsLayer = true
@@ -233,6 +277,10 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
 
         splitView.addSubview(leftContainer)
         splitView.addSubview(rightContainer)
+
+        workspacesTabView.translatesAutoresizingMaskIntoConstraints = false
+        workspacesTabView.addSubview(splitView)
+        tabContainer.addSubview(workspacesTabView)
 
         let leftSectionLabel = NSTextField(labelWithString: "Workspace Details")
         leftSectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -302,30 +350,17 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         workspaceOptionsRow.alignment = .centerY
         workspaceOptionsRow.spacing = 10
 
-        let diagnosticsRow = NSStackView(views: [developerDiagnosticsToggle, openLogsFolderButton])
-        diagnosticsRow.orientation = .horizontal
-        diagnosticsRow.alignment = .centerY
-        diagnosticsRow.spacing = 8
-        openLogsFolderButton.setContentHuggingPriority(.required, for: .horizontal)
-        openLogsFolderButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        quitSelectedAppButton.setContentHuggingPriority(.required, for: .horizontal)
+        quitSelectedAppButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        resetDataButton.target = self
-        resetDataButton.action = #selector(resetDataClicked)
-        resetDataButton.bezelStyle = .rounded
-        resetDataButton.controlSize = .small
-        resetDataButton.font = .systemFont(ofSize: 11, weight: .semibold)
-        resetDataButton.contentTintColor = .systemRed
-
-        let actionsRow = NSStackView(views: [quitSelectedAppButton, resetDataButton])
+        let actionsRow = NSStackView(views: [quitSelectedAppButton])
         actionsRow.orientation = .horizontal
         actionsRow.alignment = .centerY
         actionsRow.spacing = 8
-        quitSelectedAppButton.setContentHuggingPriority(.required, for: .horizontal)
-        quitSelectedAppButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        resetDataButton.setContentHuggingPriority(.required, for: .horizontal)
-        resetDataButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let settingsStack = NSStackView(views: [leftNameField, workspaceOptionsRow, diagnosticsRow, actionsRow])
+        let settingsStack = NSStackView(views: [
+            leftNameField, workspaceOptionsRow, actionsRow,
+        ])
         settingsStack.orientation = .vertical
         settingsStack.alignment = .leading
         settingsStack.spacing = 10
@@ -378,42 +413,77 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         rightContainer.addSubview(rightPopup)
         rightContainer.addSubview(rightScroll)
 
+        buildShortcutsTab(into: shortcutsTabView)
+        buildPreferencesTab(into: preferencesTabView)
+        buildAboutTab(into: aboutTabView)
+        shortcutsTabView.translatesAutoresizingMaskIntoConstraints = false
+        preferencesTabView.translatesAutoresizingMaskIntoConstraints = false
+        aboutTabView.translatesAutoresizingMaskIntoConstraints = false
+        shortcutsTabView.isHidden = true
+        preferencesTabView.isHidden = true
+        aboutTabView.isHidden = true
+        tabContainer.addSubview(shortcutsTabView)
+        tabContainer.addSubview(preferencesTabView)
+        tabContainer.addSubview(aboutTabView)
+
         NSLayoutConstraint.activate([
-            headerCard.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
+            headerCard.topAnchor.constraint(equalTo: view.topAnchor, constant: 44),
             headerCard.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             headerCard.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
 
             titleLabel.topAnchor.constraint(equalTo: headerCard.topAnchor, constant: 14),
             titleLabel.leadingAnchor.constraint(
-                equalTo: settingsLogoView.trailingAnchor, constant: 10),
+                equalTo: settingsLogoView.trailingAnchor, constant: 12),
 
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
             subtitleLabel.leadingAnchor.constraint(
-                equalTo: settingsLogoView.trailingAnchor, constant: 10),
+                equalTo: settingsLogoView.trailingAnchor, constant: 12),
+            subtitleLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: quitDeksButton.leadingAnchor, constant: -16),
             subtitleLabel.bottomAnchor.constraint(equalTo: headerCard.bottomAnchor, constant: -14),
 
             settingsLogoView.leadingAnchor.constraint(
                 equalTo: headerCard.leadingAnchor, constant: 18),
             settingsLogoView.centerYAnchor.constraint(equalTo: headerCard.centerYAnchor),
-            settingsLogoView.widthAnchor.constraint(equalToConstant: 28),
-            settingsLogoView.heightAnchor.constraint(equalToConstant: 28),
-
-            logoInHeaderToggle.centerYAnchor.constraint(equalTo: headerCard.centerYAnchor),
-            logoInHeaderToggle.leadingAnchor.constraint(
-                greaterThanOrEqualTo: subtitleLabel.trailingAnchor,
-                constant: 16
-            ),
-            logoInHeaderToggle.trailingAnchor.constraint(
-                equalTo: quitDeksButton.leadingAnchor, constant: -10),
+            settingsLogoView.widthAnchor.constraint(equalToConstant: 32),
+            settingsLogoView.heightAnchor.constraint(equalToConstant: 32),
 
             quitDeksButton.centerYAnchor.constraint(equalTo: headerCard.centerYAnchor),
             quitDeksButton.trailingAnchor.constraint(
                 equalTo: headerCard.trailingAnchor, constant: -18),
 
-            splitView.topAnchor.constraint(equalTo: headerCard.bottomAnchor, constant: 16),
-            splitView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            splitView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            splitView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
+            tabBar.topAnchor.constraint(equalTo: headerCard.bottomAnchor, constant: 14),
+            tabBar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+            tabContainer.topAnchor.constraint(equalTo: tabBar.bottomAnchor, constant: 14),
+            tabContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            tabContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            tabContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
+
+            workspacesTabView.topAnchor.constraint(equalTo: tabContainer.topAnchor),
+            workspacesTabView.leadingAnchor.constraint(equalTo: tabContainer.leadingAnchor),
+            workspacesTabView.trailingAnchor.constraint(equalTo: tabContainer.trailingAnchor),
+            workspacesTabView.bottomAnchor.constraint(equalTo: tabContainer.bottomAnchor),
+
+            shortcutsTabView.topAnchor.constraint(equalTo: tabContainer.topAnchor),
+            shortcutsTabView.leadingAnchor.constraint(equalTo: tabContainer.leadingAnchor),
+            shortcutsTabView.trailingAnchor.constraint(equalTo: tabContainer.trailingAnchor),
+            shortcutsTabView.bottomAnchor.constraint(equalTo: tabContainer.bottomAnchor),
+
+            preferencesTabView.topAnchor.constraint(equalTo: tabContainer.topAnchor),
+            preferencesTabView.leadingAnchor.constraint(equalTo: tabContainer.leadingAnchor),
+            preferencesTabView.trailingAnchor.constraint(equalTo: tabContainer.trailingAnchor),
+            preferencesTabView.bottomAnchor.constraint(equalTo: tabContainer.bottomAnchor),
+
+            aboutTabView.topAnchor.constraint(equalTo: tabContainer.topAnchor),
+            aboutTabView.leadingAnchor.constraint(equalTo: tabContainer.leadingAnchor),
+            aboutTabView.trailingAnchor.constraint(equalTo: tabContainer.trailingAnchor),
+            aboutTabView.bottomAnchor.constraint(equalTo: tabContainer.bottomAnchor),
+
+            splitView.topAnchor.constraint(equalTo: workspacesTabView.topAnchor),
+            splitView.leadingAnchor.constraint(equalTo: workspacesTabView.leadingAnchor),
+            splitView.trailingAnchor.constraint(equalTo: workspacesTabView.trailingAnchor),
+            splitView.bottomAnchor.constraint(equalTo: workspacesTabView.bottomAnchor),
 
             leftSectionLabel.topAnchor.constraint(equalTo: leftContainer.topAnchor, constant: 10),
             leftSectionLabel.leadingAnchor.constraint(
@@ -462,6 +532,370 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
             rightScroll.bottomAnchor.constraint(
                 equalTo: rightContainer.bottomAnchor, constant: -12),
         ])
+    }
+
+    // MARK: Tab switching
+
+    @objc private func tabChanged(_ sender: NSSegmentedControl) {
+        let idx = sender.selectedSegment
+        workspacesTabView.isHidden = idx != 0
+        shortcutsTabView.isHidden = idx != 1
+        preferencesTabView.isHidden = idx != 2
+        aboutTabView.isHidden = idx != 3
+    }
+
+    // MARK: Shortcuts tab
+
+    private func buildShortcutsTab(into container: NSView) {
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.backgroundColor =
+            NSColor.controlBackgroundColor.withAlphaComponent(0.55).cgColor
+
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(scroll)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 24, bottom: 18, right: 24)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let documentView = NSView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(stack)
+        scroll.documentView = documentView
+
+        let prefs = Persistence.loadPreferences()
+        let switchMod = modifierGlyph(for: prefs.workspaceSwitchModifier)
+
+        let groups: [(String, [(String, String)])] = [
+            (
+                "GLOBAL",
+                [
+                    ("⌃⌥W", "Open the window command palette (Raycast-style)"),
+                    ("\(switchMod)1 … \(switchMod)9", "Jump to workspace 1 through 9"),
+                    ("⌃⇧1 … ⌃⇧9", "Send the focused window to workspace 1 through 9"),
+                    ("⌥⇥", "Quick switcher — hold ⌥, tap ⇥ to cycle forward"),
+                    ("⌥⇧⇥", "Quick switcher — cycle backward"),
+                    ("⌃⇧N", "Create and switch to a new workspace"),
+                    ("⌃⇧D", "Toggle Deks on / off"),
+                ]
+            ),
+            (
+                "COMMAND PALETTE",
+                [
+                    ("↑ ↓", "Move up / down through the command list"),
+                    ("⇥ / ⇧⇥", "Switch target window in the active workspace"),
+                    ("⏎", "Run the selected command on the target window"),
+                    ("⎋", "Close the palette without running anything"),
+                    ("Type", "Fuzzy-filter commands by name"),
+                ]
+            ),
+        ]
+
+        for (groupIndex, group) in groups.enumerated() {
+            let header = NSTextField(labelWithString: group.0)
+            header.font = .systemFont(ofSize: 11, weight: .semibold)
+            header.textColor = .tertiaryLabelColor
+            stack.addArrangedSubview(header)
+            stack.setCustomSpacing(8, after: header)
+
+            for (keys, desc) in group.1 {
+                stack.addArrangedSubview(makeShortcutRow(keys: keys, description: desc))
+            }
+
+            if groupIndex < groups.count - 1, let last = stack.arrangedSubviews.last {
+                stack.setCustomSpacing(20, after: last)
+            }
+        }
+
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: container.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
+
+            documentView.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+        ])
+    }
+
+    private func modifierGlyph(for modifier: WorkspaceSwitchModifier) -> String {
+        switch modifier {
+        case .control: return "⌃"
+        case .option: return "⌥"
+        case .command: return "⌘"
+        }
+    }
+
+    private func makeShortcutRow(keys: String, description: String) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let badge = NSView()
+        badge.wantsLayer = true
+        badge.layer?.cornerRadius = 5
+        badge.layer?.backgroundColor =
+            NSColor.labelColor.withAlphaComponent(0.08).cgColor
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(badge)
+
+        let keysLabel = NSTextField(labelWithString: keys)
+        keysLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
+        keysLabel.textColor = .labelColor
+        keysLabel.alignment = .center
+        keysLabel.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(keysLabel)
+
+        let descLabel = NSTextField(labelWithString: description)
+        descLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        descLabel.textColor = .secondaryLabelColor
+        descLabel.lineBreakMode = .byTruncatingTail
+        descLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(descLabel)
+
+        NSLayoutConstraint.activate([
+            container.heightAnchor.constraint(greaterThanOrEqualToConstant: 30),
+
+            badge.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            badge.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            badge.heightAnchor.constraint(equalToConstant: 24),
+            badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
+
+            keysLabel.centerXAnchor.constraint(equalTo: badge.centerXAnchor),
+            keysLabel.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+            keysLabel.leadingAnchor.constraint(equalTo: badge.leadingAnchor, constant: 10),
+            keysLabel.trailingAnchor.constraint(equalTo: badge.trailingAnchor, constant: -10),
+
+            descLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 14),
+            descLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            descLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: container.trailingAnchor, constant: -8),
+        ])
+        return container
+    }
+
+    // MARK: Preferences tab
+
+    private func buildPreferencesTab(into container: NSView) {
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.backgroundColor =
+            NSColor.controlBackgroundColor.withAlphaComponent(0.55).cgColor
+
+        logoInHeaderToggle.target = self
+        logoInHeaderToggle.action = #selector(logoHeaderToggled(_:))
+        logoInHeaderToggle.font = .systemFont(ofSize: 12, weight: .regular)
+
+        windowGapSlider.minValue = 0
+        windowGapSlider.maxValue = 32
+        windowGapSlider.numberOfTickMarks = 9
+        windowGapSlider.allowsTickMarkValuesOnly = false
+        windowGapSlider.target = self
+        windowGapSlider.action = #selector(windowGapChanged(_:))
+        windowGapSlider.translatesAutoresizingMaskIntoConstraints = false
+        windowGapSlider.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        windowGapValueLabel.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        windowGapValueLabel.textColor = .secondaryLabelColor
+        windowGapValueLabel.alignment = .right
+        windowGapValueLabel.translatesAutoresizingMaskIntoConstraints = false
+        windowGapValueLabel.widthAnchor.constraint(equalToConstant: 48).isActive = true
+
+        let gapCaption = NSTextField(labelWithString: "Window gap")
+        gapCaption.font = .systemFont(ofSize: 12, weight: .medium)
+        gapCaption.textColor = .labelColor
+        gapCaption.setContentHuggingPriority(.required, for: .horizontal)
+        let gapRow = NSStackView(views: [gapCaption, windowGapSlider, windowGapValueLabel])
+        gapRow.orientation = .horizontal
+        gapRow.alignment = .centerY
+        gapRow.spacing = 12
+
+        developerDiagnosticsToggle.target = self
+        developerDiagnosticsToggle.action = #selector(developerDiagnosticsToggled(_:))
+        developerDiagnosticsToggle.font = .systemFont(ofSize: 12, weight: .regular)
+
+        openLogsFolderButton.target = self
+        openLogsFolderButton.action = #selector(openLogsFolderClicked)
+        openLogsFolderButton.bezelStyle = .rounded
+        openLogsFolderButton.controlSize = .small
+        openLogsFolderButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        openLogsFolderButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let diagnosticsRow = NSStackView(views: [developerDiagnosticsToggle, openLogsFolderButton])
+        diagnosticsRow.orientation = .horizontal
+        diagnosticsRow.alignment = .centerY
+        diagnosticsRow.spacing = 12
+
+        resetDataButton.target = self
+        resetDataButton.action = #selector(resetDataClicked)
+        resetDataButton.bezelStyle = .rounded
+        resetDataButton.controlSize = .small
+        resetDataButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        resetDataButton.contentTintColor = .systemRed
+        resetDataButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let appearanceSection = makePreferencesSection(
+            title: "APPEARANCE",
+            rows: [logoInHeaderToggle]
+        )
+        let layoutSection = makePreferencesSection(
+            title: "LAYOUT",
+            rows: [gapRow]
+        )
+        let advancedSection = makePreferencesSection(
+            title: "ADVANCED",
+            rows: [diagnosticsRow, resetDataButton]
+        )
+
+        let rootStack = NSStackView(views: [appearanceSection, layoutSection, advancedSection])
+        rootStack.orientation = .vertical
+        rootStack.alignment = .leading
+        rootStack.spacing = 22
+        rootStack.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 22, right: 24)
+        rootStack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(rootStack)
+
+        NSLayoutConstraint.activate([
+            rootStack.topAnchor.constraint(equalTo: container.topAnchor),
+            rootStack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            rootStack.trailingAnchor.constraint(
+                lessThanOrEqualTo: container.trailingAnchor),
+        ])
+    }
+
+    private func makePreferencesSection(title: String, rows: [NSView]) -> NSView {
+        let header = NSTextField(labelWithString: title)
+        header.font = .systemFont(ofSize: 11, weight: .semibold)
+        header.textColor = .tertiaryLabelColor
+
+        let stack = NSStackView(views: [header] + rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.setCustomSpacing(8, after: header)
+        return stack
+    }
+
+    // MARK: About tab
+
+    private static let githubURL = URL(string: "https://github.com/NPX2218/deks")!
+    private static let releasesURL = URL(
+        string: "https://github.com/NPX2218/deks/releases")!
+
+    static func appVersionString() -> String {
+        if let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+            !v.isEmpty
+        {
+            return v
+        }
+        return "dev"
+    }
+
+    private func buildAboutTab(into container: NSView) {
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.backgroundColor =
+            NSColor.controlBackgroundColor.withAlphaComponent(0.55).cgColor
+
+        let logo = NSImageView()
+        logo.image = settingsHeaderLogoImage()
+        logo.imageScaling = .scaleProportionallyUpOrDown
+        logo.translatesAutoresizingMaskIntoConstraints = false
+        logo.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        logo.heightAnchor.constraint(equalToConstant: 72).isActive = true
+
+        let nameLabel = NSTextField(labelWithString: "Deks")
+        nameLabel.font = .systemFont(ofSize: 28, weight: .bold)
+        nameLabel.textColor = .labelColor
+        nameLabel.alignment = .center
+
+        let versionLabel = NSTextField(
+            labelWithString: "Version \(Self.appVersionString())")
+        versionLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        versionLabel.textColor = .secondaryLabelColor
+        versionLabel.alignment = .center
+
+        let taglineLabel = NSTextField(
+            labelWithString: "Workspaces, window layouts, and keyboard-driven focus for macOS.")
+        taglineLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        taglineLabel.textColor = .tertiaryLabelColor
+        taglineLabel.alignment = .center
+        taglineLabel.maximumNumberOfLines = 2
+        taglineLabel.lineBreakMode = .byWordWrapping
+        taglineLabel.preferredMaxLayoutWidth = 380
+
+        let githubButton = NSButton(
+            title: "View on GitHub", target: self, action: #selector(openGitHubClicked))
+        githubButton.bezelStyle = .rounded
+        githubButton.controlSize = .regular
+        githubButton.font = .systemFont(ofSize: 12, weight: .medium)
+        githubButton.image = NSImage(
+            systemSymbolName: "link", accessibilityDescription: nil)
+        githubButton.imagePosition = .imageLeading
+        githubButton.imageHugsTitle = true
+
+        let updatesButton = NSButton(
+            title: "Check for Updates",
+            target: self, action: #selector(openReleasesClicked))
+        updatesButton.bezelStyle = .rounded
+        updatesButton.controlSize = .regular
+        updatesButton.font = .systemFont(ofSize: 12, weight: .medium)
+        updatesButton.image = NSImage(
+            systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+        updatesButton.imagePosition = .imageLeading
+        updatesButton.imageHugsTitle = true
+
+        let buttonRow = NSStackView(views: [githubButton, updatesButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 10
+
+        let creditsLabel = NSTextField(
+            labelWithString: "Made with care by Neel Bansal.")
+        creditsLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        creditsLabel.textColor = .tertiaryLabelColor
+        creditsLabel.alignment = .center
+
+        let stack = NSStackView(views: [
+            logo, nameLabel, versionLabel, taglineLabel, buttonRow, creditsLabel,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.setCustomSpacing(6, after: logo)
+        stack.setCustomSpacing(2, after: nameLabel)
+        stack.setCustomSpacing(14, after: versionLabel)
+        stack.setCustomSpacing(22, after: taglineLabel)
+        stack.setCustomSpacing(22, after: buttonRow)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            stack.leadingAnchor.constraint(
+                greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(
+                lessThanOrEqualTo: container.trailingAnchor, constant: -24),
+        ])
+    }
+
+    @objc private func openGitHubClicked() {
+        NSWorkspace.shared.open(Self.githubURL)
+    }
+
+    @objc private func openReleasesClicked() {
+        NSWorkspace.shared.open(Self.releasesURL)
     }
 
     private func updatePopups() {
@@ -720,6 +1154,8 @@ class ConfigPanelController: NSWindowController, NSWindowDelegate {
         let prefs = Persistence.loadPreferences()
         logoInHeaderToggle.state = prefs.showLogoInMenuBar ? .on : .off
         developerDiagnosticsToggle.state = prefs.developerDiagnosticsEnabled ? .on : .off
+        windowGapSlider.integerValue = prefs.windowGap
+        windowGapValueLabel.stringValue = "\(prefs.windowGap) px"
         quitSelectedAppButton.isEnabled = selectedBundleIDForQuit() != nil
 
         if case .workspace(let id) = leftMode,
@@ -1115,6 +1551,14 @@ extension ConfigPanelController: NSTextFieldDelegate {
             event: enabled ? "developer_diagnostics_enabled" : "developer_diagnostics_disabled",
             level: "debug"
         )
+    }
+
+    @objc private func windowGapChanged(_ sender: NSSlider) {
+        let value = max(0, min(32, sender.integerValue))
+        var prefs = Persistence.loadPreferences()
+        prefs.windowGap = value
+        Persistence.savePreferences(prefs)
+        windowGapValueLabel.stringValue = "\(value) px"
     }
 
     @objc private func openLogsFolderClicked() {
