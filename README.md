@@ -92,12 +92,7 @@ See [Building from source](#building-from-source) below.
 
 Not just apps — individual windows. Three Brave windows can live in three different workspaces.
 
-<p align="center">
-  <video src="assets/demos/workspace-switching.mp4" controls muted loop width="820">
-    Your browser does not support embedded video.
-    <a href="assets/demos/workspace-switching.mp4">Download the demo</a>.
-  </video>
-</p>
+https://github.com/user-attachments/assets/ce81d7e5-1215-480e-aa16-223f8b02f9f3
 
 ### 🎛 Command palette
 
